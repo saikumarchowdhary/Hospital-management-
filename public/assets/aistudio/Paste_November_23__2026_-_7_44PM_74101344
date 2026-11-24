@@ -1,0 +1,1936 @@
+MASTER DEVELOPMENT PROMPT – BUILD A COMPLETE HOSPITAL MANAGEMENT SYSTEM (HMS)
+
+PROJECT IDENTITY
+
+You are a senior full-stack software architect, UI/UX designer, database engineer and QA engineer.
+
+Build a complete, professional, client-ready Hospital Management System (HMS) based on the supplied document:
+
+"Hospital_Management_Functional_Detailed_Document.docx"
+
+Project name: MediCore HMS
+
+Project type: Integrated Hospital Management Website + Patient Mobile Web App.
+
+Project location:
+
+"/home/user/workspace/hms"
+
+The application must have two connected experiences:
+
+1. Patient Application: A mobile-first application where patients can register, find doctors, book appointments, view records, manage bills, view prescriptions and request services.
+2. Hospital Staff Portal: A professional management system where hospital staff operate clinical, administrative, financial, diagnostic, pharmacy, HR and other workflows.
+
+Both applications must use the same backend, database, authentication system and real-time notification infrastructure.
+
+MAIN OBJECTIVE: Deliver a genuinely functioning application, not a static design, frontend-only prototype, mock dashboard or development plan.
+
+---
+
+PART 1 – TECHNOLOGY STACK
+
+Use the following zero-setup stack.
+
+Backend
+
+- Node.js 18+
+- Express.js
+- REST API architecture
+- Server-Sent Events (SSE) for real-time updates
+- Multer for document uploads
+- bcryptjs for password hashing
+- jsonwebtoken for authentication
+- express-validator for validation
+
+Database
+
+- SQLite
+- better-sqlite3
+- Database: "./data/hms.db"
+- Automatic database creation.
+- Automatic table creation.
+- Automatic relationships and indexes.
+- Automatic initial seed data.
+- Persistent database after restart.
+- Never delete existing data during startup.
+
+Design the database access layer so SQLite can later be migrated to PostgreSQL without rewriting the entire application.
+
+Frontend
+
+- HTML5
+- CSS3
+- Vanilla JavaScript
+- ES modules
+- Responsive design
+- Hash-based SPA routing
+- PWA manifest and service worker
+- Inline SVG charts
+- System fonts
+- Locally stored icons and assets.
+
+Do not use:
+
+- React.
+- Next.js.
+- Angular.
+- Vue.
+- CDN links.
+- External fonts.
+- External images.
+- Paid APIs.
+- AI APIs.
+- External accounts for initial setup.
+
+Server
+
+- Express serves frontend and APIs.
+- Default port 3000.
+- Use PORT environment variable when configured.
+
+Commands
+
+"npm install"
+
+"npm start"
+
+"npm test"
+
+Application URL:
+
+"http://localhost:3000"
+
+On startup print:
+
+"MediCore HMS running at http://localhost:3000"
+
+Display demonstration login credentials.
+
+Pin all dependencies in package.json.
+
+Use packages that work on Windows, macOS and Linux without native compiler requirements.
+
+---
+
+PART 2 – APPLICATION ARCHITECTURE
+
+Build the application using three connected layers.
+
+Layer 1: Patient Mobile Application
+
+A responsive, installable PWA.
+
+Features:
+
+- Patient registration.
+- Login.
+- Patient dashboard.
+- Doctor discovery.
+- Appointment booking.
+- Medical records.
+- Prescriptions.
+- Laboratory reports.
+- Pharmacy.
+- Billing and payments.
+- Emergency assistance.
+- Notifications.
+- Profile.
+
+Layer 2: Hospital Staff Portal
+
+Role-based dashboards and operational modules.
+
+Features:
+
+- Patient management.
+- Doctor management.
+- Appointment management.
+- Clinical management.
+- Nursing.
+- Admission and discharge.
+- Bed management.
+- Laboratory.
+- Radiology.
+- Pharmacy.
+- Blood bank.
+- Billing.
+- Finance.
+- Insurance.
+- Payroll.
+- HR.
+- Recruitment.
+- Publisher and Approver.
+- Housekeeping.
+- External coordination.
+- Reports.
+- Administration.
+
+Layer 3: Backend and Database
+
+All screens must connect to actual backend APIs.
+
+The backend must handle:
+
+- Authentication.
+- Authorization.
+- Database operations.
+- Business workflows.
+- Document uploads.
+- Notifications.
+- Reports.
+- Audit history.
+- Real-time updates.
+
+No important action should be completed only in frontend JavaScript.
+
+---
+
+PART 3 – USER ROLES AND PERMISSIONS
+
+Implement role-based access control (RBAC).
+
+The application must automatically identify the role after login.
+
+Do not display a role selection field during login.
+
+Create the following roles.
+
+Role| Main responsibilities
+Patient| Appointments, records, bills, reports
+Administrator| Complete hospital administration
+Doctor| Consultations, diagnosis, prescriptions
+Nurse| Patient care and vital monitoring
+Receptionist| Registration and appointments
+Case Manager| Admissions and coordination
+Laboratory Staff| Diagnostic tests and reports
+Pharmacist| Medicines and inventory
+Accountant| Billing and finance
+HR / Hiring Team| Employees and recruitment
+Publisher| Announcements and campaigns
+Approver| Notice and campaign approvals
+Housekeeping Staff| Room cleaning and inspections
+External Coordinator| Suppliers and external requests
+Candidate| Careers and job applications
+
+Implement permissions on the server.
+
+Patients must only access their own records.
+
+Doctors and nurses must only access authorized patients.
+
+Accountants must not access restricted clinical information.
+
+HR must not access unrestricted medical records.
+
+Pharmacy staff must not modify clinical prescriptions.
+
+Publishers must not approve their own restricted notices.
+
+Administrators must have configurable permissions and audited access.
+
+---
+
+PART 4 – LOGIN AND DEMO ACCOUNTS
+
+Create a professional login page.
+
+Include:
+
+- Hospital branding.
+- Email or User ID.
+- Password.
+- Show/hide password.
+- Remember session.
+- Forgot password.
+- Registration for patients.
+- Validation.
+- Error messages.
+- Loading state.
+
+Create demonstration accounts automatically.
+
+Role| Email| Password
+Patient| patient@demo.com| Patient@123
+Administrator| admin@demo.com| Admin@123
+Doctor| doctor@demo.com| Doctor@123
+Nurse| nurse@demo.com| Nurse@123
+Receptionist| reception@demo.com| Reception@123
+Case Manager| case@demo.com| Case@123
+Laboratory| lab@demo.com| Lab@123
+Pharmacist| pharmacy@demo.com| Pharmacy@123
+Accountant| accounts@demo.com| Accounts@123
+HR| hr@demo.com| Hr@123
+Publisher| publisher@demo.com| Publish@123
+Approver| approver@demo.com| Approve@123
+Housekeeping| housekeeping@demo.com| House@123
+External Coordinator| external@demo.com| External@123
+Candidate| candidate@demo.com| Candidate@123
+
+Show demo accounts as clickable login cards.
+
+Clicking a card automatically fills its credentials.
+
+These are local demonstration accounts only.
+
+Security:
+
+- bcryptjs password hashing.
+- Password minimum 8 characters and at least one number.
+- JWT stored in httpOnly cookies.
+- Seven-day session expiration.
+- Logout clears authentication.
+- Login rate limiting.
+- Account lockout rules.
+- Secure session validation.
+- Server-side authorization.
+- Password reset workflow.
+- Audit sensitive actions.
+
+Do not allow patients or candidates to register as staff.
+
+---
+
+PART 5 – DATABASE DESIGN
+
+Create a properly normalized relational database.
+
+Create the following tables.
+
+Identity and organization
+
+- users
+- roles
+- permissions
+- role_permissions
+- branches
+- departments
+- specialties
+- patient_profiles
+- employee_profiles
+- doctor_profiles
+- doctor_schedules
+
+Patient services
+
+- appointments
+- appointment_slots
+- consultations
+- diagnoses
+- prescriptions
+- prescription_items
+- follow_ups
+- medical_records
+- medical_history
+- allergies
+- patient_vitals
+- clinical_notes
+- documents
+- patient_consents
+
+Admissions and facilities
+
+- admissions
+- wards
+- rooms
+- beds
+- bed_allocations
+- discharge_records
+- nursing_tasks
+- nursing_notes
+- housekeeping_tasks
+- room_inspections
+- maintenance_requests
+
+Pharmacy
+
+- medicine_categories
+- medicines
+- medicine_batches
+- pharmacy_inventory
+- stock_movements
+- dispensing_records
+- refill_requests
+
+Laboratory and radiology
+
+- lab_categories
+- lab_tests
+- lab_orders
+- lab_specimens
+- lab_results
+- radiology_orders
+- radiology_reports
+
+Blood bank
+
+- blood_groups
+- blood_donors
+- blood_inventory
+- blood_requests
+- blood_issues
+- blood_transfers
+
+Finance
+
+- invoices
+- invoice_items
+- payments
+- refunds
+- expenses
+- financial_transactions
+
+Insurance
+
+- insurance_providers
+- insurance_policies
+- insurance_cases
+- pre_authorizations
+- insurance_claims
+- insurance_documents
+
+HR and recruitment
+
+- job_vacancies
+- job_applications
+- interviews
+- employee_attendance
+- leave_requests
+- payroll
+- payslips
+
+Communication
+
+- announcements
+- announcement_approvals
+- announcement_audience
+- campaigns
+- campaign_approvals
+- campaign_metrics
+- notifications
+- notification_reads
+
+External coordination
+
+- external_providers
+- suppliers
+- external_requests
+- provider_availability
+- purchase_requests
+- purchase_orders
+- goods_receipts
+
+Shared infrastructure
+
+- attachments
+- audit_logs
+- settings
+- system_events
+
+Requirements:
+
+- Primary keys.
+- Foreign keys.
+- Unique constraints.
+- Indexes.
+- Created and updated timestamps.
+- Appropriate deletion restrictions.
+- Transactions for important operations.
+- Referential integrity.
+
+Use parameterized SQL only.
+
+Do not store passwords as plain text.
+
+Do not delete historical clinical or financial records.
+
+---
+
+PART 6 – PATIENT MOBILE APPLICATION
+
+Create an attractive patient application similar to modern healthcare applications.
+
+Use mobile-first layouts and installable PWA support.
+
+6.1 Patient Home
+
+Display:
+
+- Welcome message.
+- Patient name.
+- Patient ID.
+- Profile completion.
+- Upcoming appointment.
+- Last consultation.
+- Pending payments.
+- New laboratory reports.
+- Prescription updates.
+- Notifications.
+
+Quick actions:
+
+1. Find a Doctor.
+2. Book Appointment.
+3. My Appointments.
+4. Medical Records.
+5. Book Lab Test.
+6. Medicines.
+7. Pay Bills.
+8. Emergency SOS.
+
+Bottom navigation:
+
+Home | Visits | Records | Payments | Profile.
+
+6.2 Registration
+
+Fields:
+
+- Full name.
+- Date of birth.
+- Gender.
+- Mobile.
+- Email.
+- Address.
+- Password.
+- Confirm password.
+- Consent.
+
+Prevent duplicate accounts.
+
+Implement optional OTP integration points, but provide a working local verification mode for demonstrations.
+
+6.3 Doctor Discovery
+
+Search by:
+
+- Doctor name.
+- Specialty.
+- Department.
+- Hospital branch.
+- Available days.
+- Consultation fee.
+
+Doctor profile:
+
+- Name.
+- Photo or local avatar.
+- Qualifications.
+- Experience.
+- Specialty.
+- Department.
+- Branch.
+- Available timings.
+- Consultation fee.
+- Rating, when available.
+
+All profile information must come from the database.
+
+6.4 Appointment Booking
+
+Workflow:
+
+1. Select branch.
+2. Select department.
+3. Select doctor.
+4. View available dates.
+5. Select time.
+6. Select visit type.
+7. Display consultation charges.
+8. Review appointment.
+9. Confirm.
+10. Generate appointment reference.
+
+Statuses:
+
+- Booked.
+- Confirmed.
+- Checked In.
+- In Consultation.
+- Completed.
+- Cancelled.
+- Rescheduled.
+- No Show.
+
+Prevent double bookings using database transactions and unique slot constraints.
+
+Display appointment history and cancellation/rescheduling options.
+
+6.5 Medical Records
+
+Display:
+
+- Consultation history.
+- Diagnoses.
+- Prescriptions.
+- Laboratory reports.
+- Radiology reports.
+- Discharge summaries.
+- Vitals.
+- Allergies.
+- Medical history.
+
+Each document must show:
+
+- Document name.
+- Date.
+- Source.
+- Status.
+- Authorized view/download action.
+
+Only released reports should be displayed as final reports.
+
+6.6 Payments
+
+Display:
+
+- Invoice number.
+- Date.
+- Service description.
+- Consultation charges.
+- Laboratory charges.
+- Pharmacy charges.
+- Admission charges.
+- Discounts.
+- Tax.
+- Total.
+- Paid amount.
+- Outstanding balance.
+
+Implement a local simulated payment workflow.
+
+Statuses:
+
+- Pending.
+- Processing.
+- Paid.
+- Failed.
+- Cancelled.
+- Refunded.
+
+Generate receipts and payment references.
+
+Never claim real money has been transferred without a connected and verified payment provider.
+
+6.7 Laboratory Booking
+
+Patients can:
+
+- View available tests.
+- View prices.
+- View descriptions.
+- Select branch.
+- Select appointment date.
+- Choose available collection slots.
+- Confirm test booking.
+- Track test status.
+- View released reports.
+
+6.8 Pharmacy
+
+Display:
+
+- Active prescriptions.
+- Medicine name.
+- Dosage.
+- Frequency.
+- Duration.
+- Instructions.
+- Prescribing doctor.
+- Prescription date.
+
+Allow refill requests where configured.
+
+Patients cannot edit prescriptions.
+
+6.9 Emergency Assistance
+
+Create a prominent SOS button.
+
+Fields:
+
+- Emergency type.
+- Patient details.
+- Contact number.
+- Location.
+- Additional notes.
+
+Generate an emergency reference number.
+
+Display actual request status.
+
+Provide a direct phone-call option where available.
+
+Do not falsely claim ambulance dispatch or live GPS tracking without working integrations.
+
+---
+
+PART 7 – STAFF PORTAL
+
+Create a modern hospital administration dashboard with a collapsible sidebar, top bar, profile menu, notification bell and responsive mobile navigation.
+
+Each role must see its own dashboard and authorized modules.
+
+7.1 Administrator Dashboard
+
+KPI cards:
+
+- Total Patients.
+- Total Doctors.
+- Total Staff.
+- Today's Appointments.
+- Active Admissions.
+- Available Beds.
+- Occupied Beds.
+- Pending Lab Tests.
+- Low Stock Medicines.
+- Outstanding Payments.
+- Today's Revenue.
+
+Charts:
+
+- Patient registration.
+- Appointment statistics.
+- Department performance.
+- Bed occupancy.
+- Revenue.
+- Laboratory turnaround.
+
+Recent activity:
+
+- New registrations.
+- New appointments.
+- Admissions.
+- Discharges.
+- Payments.
+- Alerts.
+
+All values must come from database queries.
+
+7.2 Patient Management
+
+- Patient registration.
+- Patient search.
+- Patient ID generation.
+- Profile editing.
+- Contact information.
+- Appointment history.
+- Admission history.
+- Medical record access according to permission.
+- Billing history.
+- Account activation/blocking.
+
+Support duplicate patient detection using approved identifiers.
+
+7.3 Staff and Department Management
+
+Administrator can:
+
+- Create staff accounts.
+- Edit staff profiles.
+- Assign departments.
+- Assign branches.
+- Assign roles.
+- Configure permissions.
+- Activate/deactivate accounts.
+- Reset passwords.
+- View employee records.
+
+Department examples:
+
+- General Medicine.
+- Cardiology.
+- Neurology.
+- Orthopedics.
+- Pediatrics.
+- Gynecology.
+- Dermatology.
+- ENT.
+- Ophthalmology.
+- General Surgery.
+- Emergency Medicine.
+- Radiology.
+- Laboratory.
+- Pharmacy.
+- Blood Bank.
+- Administration.
+- Human Resources.
+- Finance.
+- Nursing.
+- Housekeeping.
+
+Allow department management.
+
+7.4 Doctor Management
+
+Fields:
+
+- Doctor name.
+- Doctor ID.
+- Email.
+- Phone.
+- Qualification.
+- Specialty.
+- Department.
+- Branch.
+- Experience.
+- Consultation fee.
+- Available days.
+- Working hours.
+- Active status.
+
+Implement doctor schedule management.
+
+7.5 Appointment Management
+
+Create:
+
+- Calendar view.
+- Daily schedule.
+- Weekly schedule.
+- Doctor-wise appointments.
+- Department-wise appointments.
+- Appointment table.
+
+Actions:
+
+- Book.
+- Confirm.
+- Check In.
+- Reschedule.
+- Cancel.
+- Mark No Show.
+- Complete.
+
+7.6 Admissions and Bed Management
+
+Admission fields:
+
+- Patient.
+- Patient ID.
+- Admission date.
+- Reason.
+- Department.
+- Ward.
+- Room.
+- Bed.
+- Assigned doctor.
+- Case manager.
+- Admission type.
+- Status.
+
+Bed statuses:
+
+- Available.
+- Reserved.
+- Occupied.
+- Cleaning.
+- Maintenance.
+
+Workflow:
+
+Admission request → Approval → Bed allocation → Active care → Discharge pending → Discharged → Cleaning → Inspection → Available.
+
+Prevent overlapping admissions and duplicate bed allocations.
+
+Discharge should update bed availability and create housekeeping tasks.
+
+7.7 Doctor Module
+
+Doctor dashboard:
+
+- Today's appointments.
+- Pending consultations.
+- Assigned patients.
+- Active admissions.
+- Pending lab reports.
+- Follow-up appointments.
+
+Consultation screen:
+
+- Patient details.
+- Medical history.
+- Allergies.
+- Vitals.
+- Chief complaint.
+- Examination notes.
+- Diagnosis.
+- Treatment plan.
+- Prescription.
+- Laboratory request.
+- Radiology request.
+- Follow-up date.
+
+Prescription fields:
+
+- Medicine.
+- Dosage.
+- Frequency.
+- Duration.
+- Instructions.
+
+Maintain clinical history and author attribution.
+
+7.8 Nurse Module
+
+Display assigned patients and wards.
+
+Features:
+
+- Vital monitoring.
+- Nursing notes.
+- Medication administration records where configured.
+- Patient-care tasks.
+- Clinical observations.
+- Bed assignment.
+- Patient status.
+
+Vitals:
+
+- Blood pressure.
+- Pulse.
+- Temperature.
+- Respiratory rate.
+- Oxygen saturation.
+- Height.
+- Weight.
+
+Record the nurse, timestamp and relevant patient encounter.
+
+7.9 Receptionist Module
+
+- Register patients.
+- Search patients.
+- Book appointments.
+- Manage schedules.
+- Check in patients.
+- Manage front-office requests.
+- View appointment status.
+- Manage basic patient information.
+
+7.10 Case Manager Module
+
+- Admission coordination.
+- Discharge planning.
+- Assigned case list.
+- Patient service requests.
+- Ambulance coordination.
+- External provider coordination.
+- Discharge checklist.
+- Case status history.
+
+7.11 Laboratory Module
+
+Dashboard:
+
+- Total orders.
+- Pending tests.
+- Specimens collected.
+- Processing.
+- Awaiting review.
+- Released reports.
+
+Workflow:
+
+Order → Verification → Specimen Collection → Processing → Result Entry → Review → Release → Patient Notification.
+
+Result fields:
+
+- Test name.
+- Result value.
+- Unit.
+- Reference range.
+- Status.
+- Performed date.
+- Reviewed by.
+- Released date.
+
+Provide secure document uploads.
+
+7.12 Radiology Module
+
+- Radiology test catalogue.
+- Imaging requests.
+- Patient details.
+- Modality.
+- Appointment.
+- Imaging status.
+- Report entry.
+- Image/document attachments.
+- Report review.
+- Report release.
+
+Build local demo functionality when PACS integration is unavailable.
+
+7.13 Pharmacy Module
+
+Dashboard:
+
+- Total Medicines.
+- Available Stock.
+- Low Stock.
+- Expired Medicines.
+- Pending Prescriptions.
+- Refill Requests.
+
+Features:
+
+- Medicine categories.
+- Medicine catalogue.
+- Batch management.
+- Expiry tracking.
+- Inventory.
+- Stock receipts.
+- Stock movements.
+- Prescription dispensing.
+- Pharmacy billing.
+- Refill requests.
+- Low-stock alerts.
+
+Maintain inventory traceability.
+
+Do not allow unauthorized dispensing or stock manipulation.
+
+7.14 Blood Bank Module
+
+- Donor management.
+- Blood groups.
+- Blood components.
+- Blood stock.
+- Collection dates.
+- Expiry dates.
+- Storage status.
+- Blood requests.
+- Reservations.
+- Blood issue.
+- External transfer requests.
+
+Require authorized compatibility and screening checks before issuing blood.
+
+Maintain complete traceability.
+
+7.15 Finance and Billing
+
+Dashboard:
+
+- Revenue.
+- Collections.
+- Outstanding balances.
+- Expenses.
+- Refunds.
+- Insurance claims.
+
+Features:
+
+- Patient invoices.
+- Consultation billing.
+- Laboratory billing.
+- Pharmacy billing.
+- Admission billing.
+- Payment records.
+- Advances.
+- Refunds.
+- Expenses.
+- Financial reports.
+- Receipts.
+
+Every financial change must be attributed and auditable.
+
+7.16 Insurance / TPA
+
+- Provider management.
+- Patient policy.
+- Policy number.
+- Eligibility.
+- Pre-authorization.
+- Admission reference.
+- Estimate.
+- Supporting documents.
+- Query management.
+- Claim submission.
+- Approval/rejection.
+- Settlement.
+
+Implement a local simulated insurer workflow.
+
+Clearly distinguish manually recorded statuses from verified external provider responses.
+
+7.17 HR and Recruitment
+
+HR dashboard:
+
+- Employees.
+- Active employees.
+- Open vacancies.
+- Applications.
+- Interviews.
+- Selected candidates.
+
+Employee management:
+
+- Employee ID.
+- Name.
+- Email.
+- Phone.
+- Department.
+- Designation.
+- Joining date.
+- Employment status.
+- Salary information.
+
+Recruitment workflow:
+
+Vacancy Creation → Approval → Publication → Candidate Application → Review → Shortlisting → Interview → Selection → Offer → Joining.
+
+Features:
+
+- Job posting.
+- Candidate registration.
+- Resume upload.
+- Application tracking.
+- Interview scheduling.
+- Interview feedback.
+- Offer status.
+- Employee attendance.
+- Leave requests.
+- Leave approvals.
+- Payroll.
+- Payslips.
+
+Restrict payroll information.
+
+7.18 Publisher and Approver
+
+Publisher:
+
+- Create announcements.
+- Create notices.
+- Create campaigns.
+- Upload attachments.
+- Select audience.
+- Set priority.
+- Set start date.
+- Set expiry date.
+- Submit for approval.
+
+Approver:
+
+- Review.
+- Approve.
+- Reject.
+- Request changes.
+- Publish authorized content.
+
+Audience:
+
+- Patients.
+- All staff.
+- Doctors.
+- Nurses.
+- Departments.
+- Branches.
+- Selected roles.
+
+Track views and acknowledgements.
+
+7.19 Advertisements and Promotions
+
+Create a campaign management system.
+
+Features:
+
+- Campaign name.
+- Description.
+- Banner upload.
+- Destination.
+- Offer terms.
+- Audience.
+- Branch.
+- Start date.
+- End date.
+- Approval.
+- Publishing.
+- Click tracking.
+- Impression tracking.
+
+Clearly label sponsored content.
+
+Never let promotions interfere with emergency access or patient care.
+
+7.20 Housekeeping
+
+Features:
+
+- Cleaning task board.
+- Room.
+- Ward.
+- Bed.
+- Assigned employee.
+- Priority.
+- Start time.
+- Completion time.
+- Inspection.
+- Reopening of failed tasks.
+
+A room or bed cannot become Ready before the required inspection passes.
+
+7.21 External Coordination
+
+Manage:
+
+- Blood banks.
+- Hospitals.
+- Suppliers.
+- Insurance/TPA.
+- Staffing agencies.
+- Housekeeping services.
+- External providers.
+
+Shared workflow:
+
+Draft → Submitted → Approval Pending → Provider Processing → Confirmed → Fulfilled → Closed.
+
+Exception statuses:
+
+- Rejected.
+- Unavailable.
+- Delayed.
+- Cancelled.
+- Escalated.
+
+Record:
+
+- Provider.
+- Source.
+- Availability.
+- Quantity.
+- Location.
+- Last updated.
+- Confirmation.
+- ETA.
+- Reference number.
+- Status history.
+
+Do not show unverified provider availability as confirmed.
+
+---
+
+PART 8 – REAL-TIME FUNCTIONALITY
+
+The application must behave like a connected live system.
+
+Implement SSE using Express.
+
+Real-time events:
+
+- New appointment.
+- Appointment confirmation.
+- Patient check-in.
+- New admission.
+- Bed allocation.
+- Bed release.
+- New laboratory order.
+- Result release.
+- New prescription.
+- Pharmacy dispensing.
+- Invoice creation.
+- Payment status.
+- Emergency request.
+- Notice publication.
+- Recruitment status change.
+- Housekeeping task update.
+
+Create a notification bell with unread count.
+
+Use SSE for connected users and polling fallback where necessary.
+
+Use database-backed events and permissions.
+
+Do not broadcast patient data or sensitive information to unauthorized users.
+
+Show connection status and reconnect automatically.
+
+---
+
+PART 9 – WORKFLOW ENGINE
+
+Centralize important business transitions.
+
+Every transition must validate:
+
+- Current status.
+- User role.
+- Record ownership.
+- Permission.
+- Required fields.
+- Related record state.
+
+Use database transactions for multi-table operations.
+
+Appointment
+
+Booked → Confirmed → Checked In → In Consultation → Completed.
+
+Allow permitted cancellation and rescheduling.
+
+Admission
+
+Requested → Approved → Admitted → Active Care → Discharge Pending → Discharged.
+
+Laboratory
+
+Ordered → Scheduled → Specimen Collected → Processing → Awaiting Review → Released.
+
+Pharmacy
+
+Requested → Under Review → Approved → Dispensed → Completed.
+
+Insurance
+
+Draft → Submitted → Under Review → Query Raised → Resubmitted → Approved/Rejected → Settled.
+
+Recruitment
+
+Submitted → Under Review → Shortlisted → Interview Scheduled → Selected/Not Selected → Offer Issued → Joined.
+
+Housekeeping
+
+Assigned → In Progress → Awaiting Inspection → Completed.
+
+Every transition must update:
+
+1. Main record.
+2. History.
+3. Notifications.
+4. Audit log.
+5. Related module data where required.
+
+Reject invalid transitions with clear errors.
+
+---
+
+PART 10 – REPORTS AND ANALYTICS
+
+Create actual database-driven reports.
+
+Administrator:
+
+- Patient registration.
+- Appointments.
+- Doctor performance.
+- Department performance.
+- Admissions.
+- Discharges.
+- Bed occupancy.
+- Length of stay.
+- Emergency requests.
+- Laboratory turnaround.
+- Pharmacy inventory.
+- Medicine expiry.
+- Blood stock.
+- Revenue.
+- Collections.
+- Expenses.
+- Insurance claims.
+- Payroll.
+- Recruitment.
+- Campaign performance.
+
+Filters:
+
+- 7 days.
+- 30 days.
+- 90 days.
+- Custom date range.
+- Branch.
+- Department.
+- Status.
+
+Charts:
+
+- Bar.
+- Line.
+- Donut.
+
+Use inline SVG.
+
+Provide CSV exports.
+
+Display:
+
+- Report generation date.
+- Data source.
+- Last updated time.
+- Applied filters.
+
+Export only data the user is authorized to access.
+
+Dashboard figures must never be hardcoded.
+
+Clearly label sample data.
+
+---
+
+PART 11 – SECURITY, PRIVACY AND CLINICAL SAFEGUARDS
+
+This application handles sensitive patient, employee and financial information.
+
+Implement:
+
+- Role-based access control.
+- Server-side authorization.
+- Secure cookies.
+- Password hashing.
+- Rate limiting.
+- CSRF protection appropriate to cookie authentication.
+- Input validation.
+- Output escaping.
+- SQL parameterization.
+- Secure file access.
+- Upload MIME and size validation.
+- Session expiration.
+- Audit logging.
+- Consent records.
+- Sensitive record access history.
+- Account deactivation.
+- Password reset.
+- Backup and restore procedures.
+- Error handling without exposing secrets.
+
+Clinical safeguards:
+
+- Never invent patient diagnoses.
+- Never invent laboratory results.
+- Never generate prescriptions automatically without authorized clinician action.
+- Do not expose unreleased reports.
+- Do not allow unauthorized edits to finalized clinical records.
+- Preserve historical records.
+- Record who created, modified and reviewed clinical information.
+
+Financial safeguards:
+
+- Never store raw card data.
+- Record transaction references.
+- Audit financial changes.
+- Prevent duplicate payment records.
+- Keep clinical and financial permissions separate.
+
+Compliance must be assessed against applicable local laws and hospital policies before production deployment. Do not claim HIPAA, DPDP or other compliance certification merely because security features exist.
+
+---
+
+PART 12 – UI/UX QUALITY
+
+Create a premium, professional healthcare interface.
+
+Design inspiration:
+
+- Modern hospital ERP.
+- Enterprise healthcare dashboards.
+- Professional patient portals.
+
+Colour palette:
+
+- Primary blue: #1E5EFF
+- Background: #F7F8FA
+- White: #FFFFFF
+- Text: #161823
+- Secondary: #6B7280
+- Success: #16A34A
+- Warning: #F59E0B
+- Danger: #DC2626
+
+Design requirements:
+
+- Professional sidebar.
+- Collapsible navigation.
+- Responsive top bar.
+- Search.
+- Notifications.
+- Profile menu.
+- Dashboard KPI cards.
+- Professional tables.
+- Filters.
+- Search.
+- Pagination.
+- Charts.
+- Forms.
+- Modal dialogs.
+- Toast notifications.
+- Loading skeletons.
+- Empty states.
+- Error states.
+- Retry buttons.
+
+Patient app:
+
+- Mobile-first layout.
+- Bottom navigation.
+- Touch-friendly controls.
+- Installable PWA.
+- Responsive cards.
+- Simple patient-friendly wording.
+
+Staff portal:
+
+- Desktop-first layout.
+- Mobile-responsive tables.
+- Role-specific navigation.
+- Professional dashboard widgets.
+
+Every field must have a label.
+
+Every button must work.
+
+Every form must validate.
+
+Every API error must be shown clearly.
+
+No broken navigation.
+
+No fake buttons.
+
+No placeholder screens pretending to be completed modules.
+
+Use local SVG icons and illustrations where necessary.
+
+---
+
+PART 13 – PROJECT STRUCTURE
+
+Use a modular architecture.
+
+Every source file must be under 300 lines. Split large files into smaller modules.
+
+hms/
+├── package.json
+├── package-lock.json
+├── server.js
+├── README.md
+├── db/
+│   ├── database.js
+│   ├── schema.js
+│   ├── migrations.js
+│   └── seed.js
+├── middleware/
+│   ├── auth.js
+│   ├── roles.js
+│   ├── validation.js
+│   ├── uploads.js
+│   └── errors.js
+├── services/
+│   ├── workflow.js
+│   ├── notifications.js
+│   ├── audit.js
+│   ├── appointments.js
+│   ├── admissions.js
+│   ├── billing.js
+│   ├── pharmacy.js
+│   ├── reports.js
+│   └── events.js
+├── routes/
+│   ├── auth.js
+│   ├── patients.js
+│   ├── doctors.js
+│   ├── appointments.js
+│   ├── clinical.js
+│   ├── nursing.js
+│   ├── admissions.js
+│   ├── beds.js
+│   ├── laboratory.js
+│   ├── radiology.js
+│   ├── pharmacy.js
+│   ├── bloodbank.js
+│   ├── billing.js
+│   ├── insurance.js
+│   ├── hr.js
+│   ├── publisher.js
+│   ├── campaigns.js
+│   ├── housekeeping.js
+│   ├── external.js
+│   ├── notifications.js
+│   ├── reports.js
+│   └── admin.js
+├── tests/
+│   ├── auth.test.js
+│   ├── appointments.test.js
+│   ├── admissions.test.js
+│   ├── clinical.test.js
+│   ├── pharmacy.test.js
+│   ├── billing.test.js
+│   └── e2e.test.js
+├── public/
+│   ├── index.html
+│   ├── manifest.json
+│   ├── service-worker.js
+│   ├── css/
+│   │   ├── base.css
+│   │   ├── layout.css
+│   │   ├── components.css
+│   │   └── responsive.css
+│   ├── assets/
+│   └── js/
+│       ├── api.js
+│       ├── auth.js
+│       ├── router.js
+│       ├── ui.js
+│       ├── events.js
+│       ├── charts.js
+│       └── pages/
+│           ├── patient.js
+│           ├── doctors.js
+│           ├── appointments.js
+│           ├── records.js
+│           ├── doctor-portal.js
+│           ├── nurse.js
+│           ├── receptionist.js
+│           ├── admissions.js
+│           ├── beds.js
+│           ├── laboratory.js
+│           ├── radiology.js
+│           ├── pharmacy.js
+│           ├── bloodbank.js
+│           ├── finance.js
+│           ├── insurance.js
+│           ├── hr.js
+│           ├── publisher.js
+│           ├── campaigns.js
+│           ├── housekeeping.js
+│           ├── external.js
+│           ├── admin.js
+│           ├── reports.js
+│           └── profile.js
+├── uploads/
+└── data/
+    ├── hms.db
+    └── secret.key
+
+Add modules where required.
+
+---
+
+PART 14 – TESTING
+
+Use Node.js built-in "node:test" and fetch.
+
+Tests must run against an isolated temporary database.
+
+Test the complete workflows.
+
+Authentication
+
+- Patient registration.
+- Login for all roles.
+- Invalid password.
+- Duplicate registration.
+- Account blocking.
+- Unauthorized access.
+- Session expiration.
+- Password reset rules.
+
+Patient and appointments
+
+- Patient registration.
+- Doctor search.
+- Appointment booking.
+- Slot availability.
+- Duplicate booking prevention.
+- Appointment cancellation.
+- Appointment rescheduling.
+- Appointment history.
+
+Clinical
+
+- Doctor consultation.
+- Diagnosis creation.
+- Prescription creation.
+- Nurse vital entry.
+- Patient access restrictions.
+
+Admission
+
+- Admission creation.
+- Bed availability.
+- Bed allocation.
+- Duplicate bed prevention.
+- Discharge.
+- Housekeeping task creation.
+- Room inspection.
+- Bed release.
+
+Laboratory
+
+- Test order.
+- Specimen collection.
+- Result submission.
+- Review.
+- Report release.
+- Unauthorized report access.
+
+Pharmacy
+
+- Medicine creation.
+- Inventory receipt.
+- Prescription dispensing.
+- Stock reduction.
+- Insufficient stock prevention.
+- Expiry alerts.
+
+Finance
+
+- Invoice generation.
+- Payment recording.
+- Duplicate payment prevention.
+- Outstanding balance.
+- Refund.
+- CSV export.
+
+Other modules
+
+- Blood bank request.
+- Insurance claim.
+- HR vacancy.
+- Candidate application.
+- Interview.
+- Notice approval.
+- Campaign publishing.
+- Housekeeping completion.
+- External request tracking.
+- Notifications.
+- Audit history.
+
+System
+
+- Database persistence.
+- Restart persistence.
+- Database recreation.
+- File access permissions.
+- API error handling.
+- Role restrictions.
+- Real-time events.
+
+All tests must pass before completion.
+
+---
+
+PART 15 – DEVELOPMENT EXECUTION
+
+Do not generate the entire application as one enormous file.
+
+Develop systematically.
+
+1. Inspect the supplied functional requirements document.
+2. Extract every module, actor, input, process, output, validation and acceptance criterion.
+3. Create a requirements-to-feature checklist.
+4. Build database schema and seed data.
+5. Build authentication and permissions.
+6. Build common API infrastructure.
+7. Build patient registration and doctor discovery.
+8. Build appointments.
+9. Build clinical and nursing modules.
+10. Build admissions and bed management.
+11. Build laboratory and radiology.
+12. Build pharmacy and blood bank.
+13. Build finance and insurance.
+14. Build HR and recruitment.
+15. Build Publisher and Approver.
+16. Build housekeeping and external coordination.
+17. Build notifications and SSE.
+18. Build reports and charts.
+19. Build the complete responsive frontend.
+20. Run automated tests.
+21. Run the actual server.
+22. Test the complete application through the browser.
+23. Fix all failures.
+
+Do not skip modules without documenting the reason.
+
+Do not stop after login.
+
+Do not stop after creating the database.
+
+Do not create dummy screens in place of working modules.
+
+---
+
+PART 16 – REAL-WORLD END-TO-END ACCEPTANCE TEST
+
+Perform this complete workflow:
+
+Patient journey
+
+1. Register a new patient.
+2. Log in.
+3. Search for a doctor.
+4. Open the doctor's profile.
+5. View available slots.
+6. Book an appointment.
+7. Receive an appointment reference.
+8. Open the patient dashboard.
+9. View appointment details.
+
+Receptionist journey
+
+10. Log in as receptionist.
+11. Find the registered patient.
+12. View the appointment.
+13. Check the patient in.
+
+Doctor journey
+
+14. Log in as doctor.
+15. View the checked-in patient.
+16. Open the patient record.
+17. Record consultation notes.
+18. Enter diagnosis.
+19. Create prescription.
+20. Order a laboratory test.
+21. Save the consultation.
+
+Laboratory journey
+
+22. Log in as laboratory staff.
+23. View the new order.
+24. Record specimen collection.
+25. Enter a clearly identified sample result.
+26. Submit for review.
+27. Release the report through authorized workflow.
+
+Patient journey
+
+28. Log in again.
+29. View prescription.
+30. View released laboratory report.
+31. View invoice.
+
+Pharmacy journey
+
+32. Log in as pharmacist.
+33. View authorized prescription.
+34. Dispense available medicine.
+35. Verify stock reduction.
+
+Finance journey
+
+36. Log in as accountant.
+37. View generated invoice.
+38. Record a demonstration payment.
+39. Generate receipt.
+40. Verify updated patient balance.
+
+Admission journey
+
+41. Create an admission.
+42. Allocate an available bed.
+43. Verify that another patient cannot receive the same bed.
+44. Record discharge.
+45. Create cleaning task.
+46. Complete cleaning.
+47. Inspect room.
+48. Release bed to Available.
+
+Administrator journey
+
+49. Log in as administrator.
+50. View all operational dashboards.
+51. Verify statistics.
+52. View reports.
+53. View notifications.
+54. Review audit history.
+
+Also test the remaining roles and modules independently.
+
+Check:
+
+- Browser console.
+- Server logs.
+- API responses.
+- Mobile responsiveness.
+- Form validation.
+- Database records.
+- Real-time notification delivery.
+- File permissions.
+- Restart persistence.
+
+Do not declare a workflow successful unless its database changes and API responses have been verified.
+
+---
+
+PART 17 – FINAL DELIVERY
+
+Deliver the complete project in:
+
+"/home/user/workspace/hms"
+
+The final project must include:
+
+- Complete source code.
+- Complete SQLite database schema.
+- Automatic seed data.
+- Backend APIs.
+- Patient PWA.
+- Staff portal.
+- Role permissions.
+- Real-time notifications.
+- Document uploads.
+- Reports.
+- CSV exports.
+- Automated tests.
+- README documentation.
+
+README must include:
+
+- Project description.
+- Requirements.
+- Installation.
+- Start instructions.
+- Test instructions.
+- Application URL.
+- Demo accounts.
+- Database location.
+- Upload location.
+- How to reset demonstration data.
+- How to add a department.
+- How to add a role.
+- How to configure permissions.
+- How to add a workflow status.
+- How to configure hospital settings.
+- Production deployment prerequisites.
+
+FINAL ACCEPTANCE CONDITIONS
+
+The project is not complete until:
+
+- npm install succeeds.
+- npm start succeeds.
+- npm test succeeds.
+- Database is automatically created.
+- All demo accounts work.
+- All role dashboards work.
+- All major workflows work.
+- APIs return valid responses.
+- Database relationships are correct.
+- Notifications work.
+- Reports use real database data.
+- Documents are securely accessible.
+- No critical permission bypass exists.
+- No duplicate appointment or bed allocation occurs.
+- No browser console errors remain.
+- No unhandled promise rejections remain.
+- No broken buttons or navigation remain.
+- Mobile and desktop layouts work.
+- Data persists after restart.
+
+Do not claim real external integrations are operational unless they have been connected and tested.
+
+FINAL RESPONSE FORMAT
+
+Provide only:
+
+1. Application URL.
+2. Installation and startup commands.
+3. Demo login accounts.
+4. Implemented modules.
+5. Tests executed and their actual results.
+6. Any remaining external integration or production deployment requirements.
+
+Build this as a serious hospital software deliverable suitable for client review and subsequent production hardening.

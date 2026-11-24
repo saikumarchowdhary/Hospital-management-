@@ -1,0 +1,8 @@
+{
+  "name": "ProjectPulse Dashboard",
+  "description": "A modern responsive project management dashboard with sidebar navigation, kanban boards, task analytics, team collaboration, and real-time activity feeds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

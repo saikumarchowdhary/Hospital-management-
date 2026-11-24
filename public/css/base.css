@@ -1,0 +1,76 @@
+:root {
+  --primary: #1E5EFF;
+  --primary-hover: #1449D6;
+  --primary-soft: #EEF4FF;
+  --bg: #F7F8FA;
+  --surface: #FFFFFF;
+  --text: #161823;
+  --muted: #6B7280;
+  --border: #E5E7EB;
+  --border-subtle: #F1F3F5;
+  --success: #16A34A;
+  --success-soft: #ECFDF3;
+  --warning: #F59E0B;
+  --warning-soft: #FFFBEB;
+  --danger: #DC2626;
+  --danger-soft: #FEF2F2;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+  text-wrap: balance;
+  line-height: 1.25;
+}
+
+h1 { font-size: 22px; }
+h2 { font-size: 17px; }
+h3 { font-size: 15px; }
+p { margin: 0; }
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.tabular, td.num, .kpi-value, .mono {
+  font-variant-numeric: tabular-nums;
+}
+.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.text-sm { font-size: 12.5px; }
+.text-xs { font-size: 11.5px; }
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
