@@ -11,7 +11,7 @@ import { logAudit } from '../services/audit.js';
 import { registerAdminMembersRoutes } from './admin_members.js';
 import { registerAdminSignupsRoutes } from './admin_signups.js';
 
-export function createAdminRouter(db, authenticate, uploadDir, broker = null) {
+export function createAdminRouter(db, authenticate, uploadDir, broker = null, upload = null) {
   const router = express.Router();
   router.use(authenticate);
 
@@ -33,7 +33,7 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null) {
   }));
 
   router.use(requireRole('admin'));
-  registerAdminMembersRoutes(router, db, broker);
+  registerAdminMembersRoutes(router, db, broker, upload);
   registerAdminSignupsRoutes(router, db, broker);
 
   router.get('/overview', asyncHandler(async (_req, res) => {
@@ -72,14 +72,24 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null) {
     asyncHandler(async (req, res) => {
       const {
         full_name, email, phone = '', role_id, department_id = null, branch_id = 1, password,
-        designation = 'Staff', qualification = 'MD', shift = 'Day',
+        designation = 'Staff', qualification = 'MD', shift = 'Day', employee_id = '',
         specialty_id = null, experience_years = 5, consultation_fee = 100,
+        registration_number = '', medical_council = '',
         dob = '1990-01-01', gender = 'Other', address = 'Metro City'
       } = req.body;
       const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [email]);
       if (dup) throw new AppError(409, 'Email already registered.');
       const role = db.get('SELECT * FROM roles WHERE id = ?', [Number(role_id)]);
       if (!role) throw new AppError(404, 'Role not found.');
+
+      const safeEmpCode = employee_id ? String(employee_id).trim() : '';
+      const safeRegNo = registration_number ? String(registration_number).trim() : '';
+      if (safeEmpCode && db.get('SELECT id FROM employee_profiles WHERE upper(employee_code) = upper(?)', [safeEmpCode])) {
+        throw new AppError(409, 'Employee ID already exists.');
+      }
+      if (safeRegNo && db.get('SELECT id FROM doctor_profiles WHERE upper(registration_number) = upper(?)', [safeRegNo])) {
+        throw new AppError(409, 'Medical registration number already exists.');
+      }
 
       const hash = bcrypt.hashSync(password, 10);
       const uCode = `${role.code.slice(0, 3).toUpperCase()}-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
@@ -90,15 +100,22 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null) {
           [uCode, email, hash, full_name, phone, role.id, Number(branch_id), deptIdNum]
         );
         if (role.code === 'patient') {
+          const rows = db.all("SELECT patient_code FROM patient_profiles WHERE patient_code LIKE 'PT-%'");
+          let maxNum = 0;
+          for (const r of rows) {
+            const m = /^PT-(\d+)$/i.exec(String(r.patient_code || '').trim());
+            if (m && Number(m[1]) > maxNum) maxNum = Number(m[1]);
+          }
+          const patCode = `PT-${String(maxNum + 1).padStart(6, '0')}`;
           db.run(
             `INSERT INTO patient_profiles (user_id, patient_code, dob, gender, address, otp_verified, profile_completion)
              VALUES (?, ?, ?, ?, ?, 1, 75)`,
-            [uInfo.lastInsertRowid, `MRN-${uCode.split('-')[1]}`, dob, gender, address]
+            [uInfo.lastInsertRowid, patCode, dob, gender, address]
           );
         } else if (role.is_staff) {
           db.run(
             'INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, qualification, shift, joining_date, base_salary) VALUES (?, ?, ?, ?, ?, ?, ?, date(\'now\'), ?)',
-            [uInfo.lastInsertRowid, `EMP-${uCode}`, deptIdNum, Number(branch_id), role.code === 'doctor' ? 'CONSULTANT DOCTOR' : designation, qualification || null, shift || 'Day', role.code === 'doctor' ? 14000 : 5000]
+            [uInfo.lastInsertRowid, safeEmpCode || `EMP-${uCode}`, deptIdNum, Number(branch_id), role.code === 'doctor' ? 'CONSULTANT DOCTOR' : designation, qualification || null, shift || 'Day', role.code === 'doctor' ? 14000 : 5000]
           );
         }
         if (role.code === 'doctor') {
@@ -106,9 +123,9 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null) {
           const resolvedSpecId = specialty_id ? Number(specialty_id) : fallbackSpec.id;
           const resolvedDeptId = deptIdNum || fallbackSpec.department_id || 1;
           const dpInfo = db.run(
-            `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, availability_status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Available')`,
-            [uInfo.lastInsertRowid, `DR-${uCode.split('-')[1]}`, resolvedSpecId, resolvedDeptId, Number(branch_id), qualification || 'MD', Number(experience_years || 5), Number(consultation_fee || 100), `${qualification || 'MD'} specialist at MediCore HMS.`]
+            `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, availability_status, registration_number, medical_council, schedule_configured)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Available', ?, ?, 1)`,
+            [uInfo.lastInsertRowid, `DR-${uCode.split('-')[1]}`, resolvedSpecId, resolvedDeptId, Number(branch_id), qualification || 'MD', Number(experience_years || 5), Number(consultation_fee || 100), `${qualification || 'MD'} specialist at MediCore HMS.`, safeRegNo || `REG-${uCode}`, medical_council || null]
           );
           for (let dow = 1; dow <= 6; dow++) {
             db.run('INSERT OR IGNORE INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, slot_minutes) VALUES (?, ?, ?, ?, 30)', [dpInfo.lastInsertRowid, dow, '09:00', '17:00']);

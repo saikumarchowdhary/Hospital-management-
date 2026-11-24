@@ -37,7 +37,7 @@ export async function renderPatientHome(container, user, navigate) {
       <div class="quick-grid">
         <button class="quick-btn" data-nav="patient/book"><strong>Book Appointment</strong><span class="text-xs muted">Select specialist & slot</span></button>
         <button class="quick-btn" data-nav="patient/doctors"><strong>View Doctors</strong><span class="text-xs muted">Directory & availability</span></button>
-        <button class="quick-btn" data-nav="patient/specialties"><strong>Doctor Specializations</strong><span class="text-xs muted">24 medical specialties</span></button>
+        <button class="quick-btn" data-nav="patient/specialties"><strong>Doctor Specializations</strong><span class="text-xs muted">Browse medical specialties</span></button>
         <button class="quick-btn" data-nav="patient/visits"><strong>My Appointments</strong><span class="text-xs muted">Upcoming & history (${aptRes.appointments.length})</span></button>
         <button class="quick-btn" data-nav="patient/medicines"><strong>My Prescriptions</strong><span class="text-xs muted">${data.activeRxCount} Rx · Refill requests</span></button>
         <button class="quick-btn" data-nav="patient/records?tab=labs"><strong>Laboratory Reports</strong><span class="text-xs muted">${data.releasedLabsCount} released report(s)</span></button>

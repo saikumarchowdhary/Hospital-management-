@@ -1,10 +1,11 @@
 import cookieParser from 'cookie-parser';
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createDatabase } from './db/database.js';
 import { runMigrations } from './db/migrations.js';
-import { DEMO_USERS, seedDatabase } from './db/seed.js';
+import { bootstrapAdminFromEnv, DEMO_USERS, seedDemoData, seedReferenceData } from './db/seed.js';
 import { CLINICAL_DEPARTMENT_DOCTORS } from './db/seed_doctors.js';
 import { createAuthMiddleware, csrfProtect, getJwtSecret } from './middleware/auth.js';
 import { errorHandler } from './middleware/errors.js';
@@ -31,7 +32,9 @@ import { createPharmacyRouter } from './routes/pharmacy.js';
 import { createPublisherRouter } from './routes/publisher.js';
 import { createRadiologyRouter } from './routes/radiology.js';
 import { createReportsRouter } from './routes/reports.js';
+import { createIntegrationsRouter } from './routes/integrations.js';
 import { EventBroker } from './services/events.js';
+import { attachWebSocketServer } from './services/websocket.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,7 +42,11 @@ const __dirname = path.dirname(__filename);
 export function createHmsApp(options = {}) {
   const db = createDatabase(options.dbPath);
   runMigrations(db);
-  seedDatabase(db);
+  seedReferenceData(db);
+  if (options.seedDemo === true) {
+    seedDemoData(db);
+  }
+  bootstrapAdminFromEnv(db);
 
   const jwtSecret = options.jwtSecret || getJwtSecret(options.dataDir);
   const { upload, uploadDir } = createUploadMiddleware(options.uploadDir);
@@ -48,7 +55,12 @@ export function createHmsApp(options = {}) {
 
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    }
+  }));
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
   app.use((req, res, next) => {
@@ -63,7 +75,9 @@ export function createHmsApp(options = {}) {
   });
 
   app.get('/api/demo-accounts', (_req, res) => {
-    const isVisible = process.env.DEMO_ACCOUNTS_VISIBLE !== 'false' && process.env.DEMO_ACCOUNTS_VISIBLE !== '0';
+    const isVisible =
+      process.env.NODE_ENV !== 'production' &&
+      (process.env.DEMO_ACCOUNTS_VISIBLE === 'true' || process.env.DEMO_ACCOUNTS_VISIBLE === '1');
     if (!isVisible) {
       return res.json({ visible: false, accounts: [], groups: [] });
     }
@@ -136,9 +150,9 @@ export function createHmsApp(options = {}) {
     res.json({ visible: true, accounts: allAccounts, groups });
   });
 
-  app.use('/api/auth', createAuthRouter(db, jwtSecret, authenticate, broker));
+  app.use('/api/auth', createAuthRouter(db, jwtSecret, authenticate, broker, upload));
   app.use('/api/patients', createPatientsRouter(db, broker, authenticate, upload));
-  app.use('/api/doctors', createDoctorsRouter(db, authenticate));
+  app.use('/api/doctors', createDoctorsRouter(db, authenticate, broker));
   app.use('/api/appointments', createAppointmentsRouter(db, broker, authenticate));
   app.use('/api/clinical', createClinicalRouter(db, broker, authenticate));
   app.use('/api/nursing', createNursingRouter(db, broker, authenticate));
@@ -155,29 +169,32 @@ export function createHmsApp(options = {}) {
   app.use('/api/campaigns', createCampaignsRouter(db, broker, authenticate, upload));
   app.use('/api/housekeeping', createHousekeepingRouter(db, broker, authenticate));
   app.use('/api/external', createExternalRouter(db, broker, authenticate));
+  app.use('/api/integrations', createIntegrationsRouter(db, broker, authenticate));
   app.use('/api', createNotificationsRouter(db, broker, authenticate));
   app.use('/api/reports', createReportsRouter(db, authenticate));
-  app.use('/api/admin', createAdminRouter(db, authenticate, uploadDir, broker));
+  app.use('/api/admin', createAdminRouter(db, authenticate, uploadDir, broker, upload));
 
+  const distDir = path.join(__dirname, 'dist');
   const publicDir = path.join(__dirname, 'public');
-  app.use(express.static(publicDir));
+  const staticDir = fs.existsSync(path.join(distDir, 'index.html')) ? distDir : publicDir;
+  app.use(express.static(staticDir));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next();
-    res.sendFile(path.join(publicDir, 'index.html'));
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API endpoint not found.' });
+    }
+    return res.sendFile(path.join(staticDir, 'index.html'));
   });
 
   app.use(errorHandler);
-  return { app, db, broker };
+  const attachWebSocket = (httpServer) => attachWebSocketServer(httpServer, db, jwtSecret, broker);
+  return { app, db, broker, attachWebSocket };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT || 3000);
-  const { app } = createHmsApp();
-  app.listen(port, '0.0.0.0', () => {
+  const { app, attachWebSocket } = createHmsApp();
+  const server = app.listen(port, '0.0.0.0', () => {
     console.log(`MediCore HMS running at http://localhost:${port}`);
-    console.log('Demonstration Login Accounts (Local Demo Only):');
-    for (const u of DEMO_USERS) {
-      console.log(`  - ${u.role.padEnd(20)} | ${u.email.padEnd(24)} | ${u.pass}`);
-    }
   });
+  attachWebSocket(server);
 }

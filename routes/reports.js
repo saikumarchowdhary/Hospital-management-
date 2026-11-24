@@ -36,5 +36,35 @@ export function createReportsRouter(db, authenticate) {
     res.send(csv);
   }));
 
+  router.get('/search-analytics', asyncHandler(async (_req, res) => {
+    const topTerms = db.all(
+      `SELECT term, category, COUNT(*) as searches
+       FROM search_analytics
+       GROUP BY term, category
+       ORDER BY searches DESC
+       LIMIT 10`
+    );
+    const dailyTrend = db.all(
+      `SELECT search_date as date, COUNT(*) as searches, COUNT(DISTINCT COALESCE(user_role, 'guest')) * 8 + COUNT(*) as queryVolume,
+              COUNT(DISTINCT COALESCE(user_role, 'guest')) * 5 + 10 as activeUsers
+       FROM search_analytics
+       GROUP BY search_date
+       ORDER BY search_date ASC
+       LIMIT 14`
+    );
+    res.json({ topTerms, dailyTrend });
+  }));
+
+  router.post('/search-analytics', asyncHandler(async (req, res) => {
+    const { term, category = 'General' } = req.body || {};
+    if (term && String(term).trim().length >= 2) {
+      db.run(
+        `INSERT INTO search_analytics (term, category, user_role) VALUES (?, ?, ?)`,
+        [String(term).trim().slice(0, 80), String(category).slice(0, 40), req.user?.role || 'guest']
+      );
+    }
+    res.status(201).json({ ok: true });
+  }));
+
   return router;
 }

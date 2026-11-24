@@ -1,13 +1,54 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import bcrypt from 'bcryptjs';
+import express from 'express';
 import { AppError, asyncHandler } from '../middleware/errors.js';
 import { isStrongPassword } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
+import { approveSignupRequestTx, generateNextPatientCode, rejectSignupRequestTx } from './registration_helpers.js';
 
-export function registerAdminMembersRoutes(router, db, broker) {
+function parseCsvRows(csvText) {
+  const lines = String(csvText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const splitLine = (line) => {
+    const out = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { cur += '"'; i += 1; }
+        else inQuotes = !inQuotes;
+      } else if (ch === ',' && !inQuotes) {
+        out.push(cur.trim());
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur.trim());
+    return out;
+  };
+
+  const headers = splitLine(lines[0]).map((h) => h.toLowerCase().replace(/\s+/g, '_'));
+  return lines.slice(1).map((line, idx) => {
+    const vals = splitLine(line);
+    const rowObj = { _rowNumber: idx + 2 };
+    headers.forEach((h, i) => { rowObj[h] = vals[i] ?? ''; });
+    return rowObj;
+  });
+}
+
+export function registerAdminMembersRoutes(router, db, broker, upload = null) {
   router.get('/members', asyncHandler(async (req, res) => {
-    const { role = '', status = '', q = '' } = req.query;
+    const { role = '', status = '', department_id = '', branch_id = '', q = '' } = req.query;
     const where = ['1=1'];
     const params = [];
     if (role && role !== 'all') {
@@ -17,6 +58,14 @@ export function registerAdminMembersRoutes(router, db, broker) {
     if (status && status !== 'all') {
       where.push('u.account_status = ?');
       params.push(status);
+    }
+    if (department_id && department_id !== 'all') {
+      where.push('u.department_id = ?');
+      params.push(Number(department_id));
+    }
+    if (branch_id && branch_id !== 'all') {
+      where.push('u.branch_id = ?');
+      params.push(Number(branch_id));
     }
     if (q && String(q).trim()) {
       const like = `%${String(q).trim()}%`;
@@ -28,11 +77,11 @@ export function registerAdminMembersRoutes(router, db, broker) {
       `SELECT u.id, u.user_code, u.email, u.full_name, u.phone, u.is_active, u.account_status,
               u.created_at, u.last_login_at, u.reviewed_at, u.review_notes,
               r.id as role_id, r.code as role, r.name as role_name, r.is_staff,
-              u.department_id, d.name as department_name, b.name as branch_name,
+              u.department_id, u.branch_id, d.name as department_name, b.name as branch_name,
               ep.employee_code, ep.designation, ep.qualification as emp_qualification, ep.shift,
               pp.patient_code, pp.dob, pp.gender, pp.emergency_contact_name, pp.emergency_contact_phone,
               dp.doctor_code, dp.specialty_id, sp.name as specialty_name, dp.qualification as doc_qualification,
-              dp.experience_years, dp.consultation_fee, dp.availability_status
+              dp.experience_years, dp.consultation_fee, dp.availability_status, dp.registration_number, dp.medical_council, dp.schedule_configured
        FROM users u
        JOIN roles r ON r.id = u.role_id
        LEFT JOIN departments d ON d.id = u.department_id
@@ -42,7 +91,7 @@ export function registerAdminMembersRoutes(router, db, broker) {
        LEFT JOIN doctor_profiles dp ON dp.user_id = u.id
        LEFT JOIN specialties sp ON sp.id = dp.specialty_id
        WHERE ${where.join(' AND ')}
-       ORDER BY CASE WHEN u.account_status = 'Pending Approval' THEN 0 ELSE 1 END, u.id DESC`,
+       ORDER BY CASE WHEN u.account_status IN ('Pending Verification', 'Pending Approval') THEN 0 ELSE 1 END, u.id DESC`,
       params
     );
     res.json({ members });
@@ -54,10 +103,11 @@ export function registerAdminMembersRoutes(router, db, broker) {
       `SELECT u.id, u.user_code, u.email, u.full_name, u.phone, u.is_active, u.account_status,
               u.created_at, u.last_login_at, u.reviewed_at, u.review_notes,
               r.id as role_id, r.code as role, r.name as role_name, r.is_staff,
-              u.department_id, d.name as department_name, b.name as branch_name,
+              u.department_id, u.branch_id, d.name as department_name, b.name as branch_name,
               ep.employee_code, ep.designation, ep.qualification as emp_qualification, ep.shift, ep.joining_date,
               pp.id as patient_profile_id, pp.patient_code, pp.dob, pp.gender, pp.address, pp.blood_group, pp.emergency_contact_name, pp.emergency_contact_phone,
-              dp.id as doctor_profile_id, dp.doctor_code, dp.specialty_id, sp.name as specialty_name, dp.qualification as doc_qualification, dp.experience_years, dp.consultation_fee, dp.availability_status
+              dp.id as doctor_profile_id, dp.doctor_code, dp.specialty_id, sp.name as specialty_name, dp.qualification as doc_qualification,
+              dp.experience_years, dp.consultation_fee, dp.availability_status, dp.registration_number, dp.medical_council, dp.schedule_configured
        FROM users u
        JOIN roles r ON r.id = u.role_id
        LEFT JOIN departments d ON d.id = u.department_id
@@ -108,28 +158,28 @@ export function registerAdminMembersRoutes(router, db, broker) {
     const existing = db.get('SELECT * FROM users WHERE id = ?', [uid]);
     if (!existing) throw new AppError(404, 'Member not found.');
 
-    const { full_name, phone, department_id, role_id, designation, qualification, shift, experience_years, consultation_fee, specialty_id } = req.body;
+    const { full_name, phone, department_id, branch_id, role_id, designation, qualification, shift, experience_years, consultation_fee, specialty_id } = req.body;
     db.transaction(() => {
       db.run(
         `UPDATE users SET full_name = COALESCE(?, full_name), phone = COALESCE(?, phone),
-                department_id = ?, role_id = COALESCE(?, role_id), updated_at = datetime('now') WHERE id = ?`,
-        [full_name?.trim() || null, phone ?? null, department_id ? Number(department_id) : existing.department_id, role_id ? Number(role_id) : null, uid]
+                department_id = ?, branch_id = COALESCE(?, branch_id), role_id = COALESCE(?, role_id), updated_at = datetime('now') WHERE id = ?`,
+        [full_name?.trim() || null, phone ?? null, department_id ? Number(department_id) : existing.department_id, branch_id ? Number(branch_id) : null, role_id ? Number(role_id) : null, uid]
       );
       const emp = db.get('SELECT id FROM employee_profiles WHERE user_id = ?', [uid]);
       if (emp) {
         db.run(
-          `UPDATE employee_profiles SET department_id = ?, designation = COALESCE(?, designation),
+          `UPDATE employee_profiles SET department_id = ?, branch_id = COALESCE(?, branch_id), designation = COALESCE(?, designation),
                   qualification = COALESCE(?, qualification), shift = COALESCE(?, shift), updated_at = datetime('now') WHERE user_id = ?`,
-          [department_id ? Number(department_id) : existing.department_id, designation || null, qualification || null, shift || null, uid]
+          [department_id ? Number(department_id) : existing.department_id, branch_id ? Number(branch_id) : null, designation || null, qualification || null, shift || null, uid]
         );
       }
       const doc = db.get('SELECT id FROM doctor_profiles WHERE user_id = ?', [uid]);
       if (doc) {
         db.run(
-          `UPDATE doctor_profiles SET department_id = ?, specialty_id = COALESCE(?, specialty_id),
+          `UPDATE doctor_profiles SET department_id = ?, branch_id = COALESCE(?, branch_id), specialty_id = COALESCE(?, specialty_id),
                   qualification = COALESCE(?, qualification), experience_years = COALESCE(?, experience_years),
                   consultation_fee = COALESCE(?, consultation_fee), updated_at = datetime('now') WHERE user_id = ?`,
-          [department_id ? Number(department_id) : existing.department_id, specialty_id ? Number(specialty_id) : null, qualification || null, experience_years !== undefined ? Number(experience_years) : null, consultation_fee !== undefined ? Number(consultation_fee) : null, uid]
+          [department_id ? Number(department_id) : existing.department_id, branch_id ? Number(branch_id) : null, specialty_id ? Number(specialty_id) : null, qualification || null, experience_years !== undefined ? Number(experience_years) : null, consultation_fee !== undefined ? Number(consultation_fee) : null, uid]
         );
       }
       logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.member_updated', entityType: 'user', entityId: uid });
@@ -141,45 +191,28 @@ export function registerAdminMembersRoutes(router, db, broker) {
 
   router.post('/members/:id/review', asyncHandler(async (req, res) => {
     const uid = Number(req.params.id);
-    const { decision, notes = '' } = req.body;
+    const { decision, notes = '', role = null, department_id = null, branch_id = null, specialty_id = null } = req.body;
     if (!['Approved', 'Rejected'].includes(decision)) throw new AppError(400, 'Decision must be Approved or Rejected.');
-    const user = db.get('SELECT * FROM users WHERE id = ?', [uid]);
-    if (!user) throw new AppError(404, 'Member not found.');
 
-    const nextStatus = decision === 'Approved' ? 'Active' : 'Rejected';
-    const nextActive = decision === 'Approved' ? 1 : 0;
+    if (decision === 'Approved') {
+      const result = approveSignupRequestTx(db, broker, {
+        userId: uid,
+        adminUserId: req.user.id,
+        role,
+        department_id,
+        branch_id,
+        specialty_id,
+        admin_notes: notes
+      });
+      return res.json({ ok: true, account_status: 'Active', role: result.role });
+    }
 
-    db.transaction(() => {
-      db.run(
-        `UPDATE users SET is_active = ?, account_status = ?, reviewed_by = ?, reviewed_at = datetime('now'), review_notes = ?, updated_at = datetime('now') WHERE id = ?`,
-        [nextActive, nextStatus, req.user.id, notes, uid]
-      );
-      db.run('UPDATE employee_profiles SET employment_status = ?, updated_at = datetime(\'now\') WHERE user_id = ?', [nextStatus, uid]);
-      db.run('UPDATE doctor_profiles SET is_active = ?, updated_at = datetime(\'now\') WHERE user_id = ?', [nextActive, uid]);
-      if (decision === 'Approved') {
-        const doc = db.get('SELECT id, branch_id FROM doctor_profiles WHERE user_id = ?', [uid]);
-        if (doc) {
-          const times = ['09:00', '09:30', '10:00', '10:30', '11:00', '14:00', '14:30', '15:00'];
-          const today = new Date();
-          for (let offset = 0; offset < 7; offset++) {
-            const dt = new Date(today.getTime() + offset * 86400000).toISOString().slice(0, 10);
-            for (const t of times) {
-              db.run('INSERT OR IGNORE INTO appointment_slots (doctor_id, branch_id, slot_date, slot_time, status) VALUES (?, ?, ?, ?, ?)', [doc.id, doc.branch_id, dt, t, 'Available']);
-            }
-          }
-        }
-      }
-      logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: `admin.member_${decision.toLowerCase()}`, entityType: 'user', entityId: uid, details: { notes } });
-    })();
-
-    createNotification(db, broker, {
+    rejectSignupRequestTx(db, broker, {
       userId: uid,
-      roles: ['admin', 'hr'],
-      title: `Registration ${decision}`,
-      message: `${user.full_name} account is now ${nextStatus}.`,
-      eventType: 'member:updated'
+      adminUserId: req.user.id,
+      reason: notes || 'Declined by administrator'
     });
-    res.json({ ok: true, account_status: nextStatus });
+    return res.json({ ok: true, account_status: 'Rejected' });
   }));
 
   router.patch('/members/:id/status', asyncHandler(async (req, res) => {
@@ -198,8 +231,14 @@ export function registerAdminMembersRoutes(router, db, broker) {
       if (!isStrongPassword(reset_password)) throw new AppError(400, 'New password must be 8+ chars with a number.');
       db.run('UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL, updated_at = datetime(\'now\') WHERE id = ?', [bcrypt.hashSync(reset_password, 10), uid]);
     }
-    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.member_status_changed', entityType: 'user', entityId: uid });
-    if (broker) broker.publish('member:updated', { userId: uid, title: 'Member Account Updated', message: `${user.full_name} status updated.` }, { roles: ['admin'] });
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.member_status_changed', entityType: 'user', entityId: uid, details: JSON.stringify({ account_status, passwordReset: Boolean(reset_password) }) });
+    createNotification(db, broker, {
+      userId: uid,
+      roles: ['admin'],
+      title: 'Account Status Updated',
+      message: `${user.full_name} account status updated${account_status ? ` to ${account_status}` : ''}.`,
+      eventType: account_status === 'Suspended' ? 'member:deactivated' : 'member:updated'
+    });
     res.json({ ok: true });
   }));
 
@@ -212,5 +251,133 @@ export function registerAdminMembersRoutes(router, db, broker) {
       [bcrypt.hashSync(code, 8), new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), uid]);
     logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.password_reset_issued', entityType: 'user', entityId: uid });
     res.json({ resetCode: code, email: user.email, message: `One-time reset code issued for ${user.full_name} (valid 24 hours).` });
+  }));
+
+  const csvUpload = upload ? upload.single('file') : (_req, _res, next) => next();
+  router.post('/members/import-csv', csvUpload, asyncHandler(async (req, res) => {
+    let csvText = req.body?.csv_text || '';
+    if (!csvText && req.file?.path) {
+      csvText = fs.readFileSync(req.file.path, 'utf8');
+    }
+    if (!String(csvText).trim()) throw new AppError(400, 'CSV content or file is required.');
+
+    const rows = parseCsvRows(csvText);
+    if (!rows.length) throw new AppError(400, 'CSV must contain a header row and at least one member row.');
+
+    const roleMap = Object.fromEntries(db.all('SELECT id, code, name, is_staff FROM roles').map((r) => [r.code.toLowerCase(), r]));
+    const deptRows = db.all('SELECT id, code, name FROM departments');
+    const branchRows = db.all('SELECT id, code, name FROM branches');
+    const specRows = db.all('SELECT id, name, department_id FROM specialties');
+
+    const createdUsers = [];
+    const errors = [];
+
+    for (const row of rows) {
+      const rowNum = row._rowNumber;
+      const fullName = String(row.full_name || row.name || '').trim();
+      const email = String(row.email || '').trim().toLowerCase();
+      const mobile = String(row.mobile || row.phone || '').trim();
+      const roleCode = String(row.role || 'patient').trim().toLowerCase();
+      const password = String(row.password || '').trim();
+      const empId = String(row.employee_id || '').trim();
+      const regNo = String(row.medical_registration_number || row.registration_number || '').trim();
+      const council = String(row.medical_council || row.council || '').trim();
+
+      if (!fullName || fullName.length < 2) {
+        errors.push({ row: rowNum, email, message: 'Full name is required.' });
+        continue;
+      }
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errors.push({ row: rowNum, email, message: 'Valid email is required.' });
+        continue;
+      }
+      if (!isStrongPassword(password)) {
+        errors.push({ row: rowNum, email, message: 'Password must be at least 8 characters and include a number.' });
+        continue;
+      }
+      const roleObj = roleMap[roleCode];
+      if (!roleObj || roleObj.code === 'pending_staff') {
+        errors.push({ row: rowNum, email, message: `Unknown or invalid role "${roleCode}".` });
+        continue;
+      }
+      const dupUser = db.get('SELECT id FROM users WHERE lower(email) = lower(?) OR (? != \'\' AND phone = ?)', [email, mobile, mobile]);
+      if (dupUser) {
+        errors.push({ row: rowNum, email, message: 'Email or mobile number already exists.' });
+        continue;
+      }
+      if (empId && db.get('SELECT id FROM employee_profiles WHERE upper(employee_code) = upper(?)', [empId])) {
+        errors.push({ row: rowNum, email, message: `Employee ID ${empId} already exists.` });
+        continue;
+      }
+      if (regNo && db.get('SELECT id FROM doctor_profiles WHERE upper(registration_number) = upper(?)', [regNo])) {
+        errors.push({ row: rowNum, email, message: `Medical registration ${regNo} already exists.` });
+        continue;
+      }
+
+      const branchMatch = branchRows.find((b) => b.code.toLowerCase() === String(row.branch || '').toLowerCase() || b.name.toLowerCase() === String(row.branch || '').toLowerCase()) || branchRows[0];
+      const deptMatch = deptRows.find((d) => d.code.toLowerCase() === String(row.department || '').toLowerCase() || d.name.toLowerCase() === String(row.department || '').toLowerCase()) || null;
+      const specMatch = specRows.find((s) => s.name.toLowerCase() === String(row.specialty || '').toLowerCase()) || (deptMatch && specRows.find((s) => s.department_id === deptMatch.id)) || specRows[0];
+
+      const uCode = `${roleObj.code.slice(0, 3).toUpperCase()}-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
+      const hash = bcrypt.hashSync(password, 10);
+
+      try {
+        const uid = db.transaction(() => {
+          const uInfo = db.run(
+            `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+            [uCode, email, hash, fullName, mobile, roleObj.id, branchMatch?.id || 1, deptMatch?.id || null]
+          );
+          const newId = uInfo.lastInsertRowid;
+
+          if (roleObj.code === 'patient') {
+            const patCode = generateNextPatientCode(db);
+            db.run(
+              `INSERT INTO patient_profiles (user_id, patient_code, dob, gender, address, otp_verified, profile_completion)
+               VALUES (?, ?, ?, ?, ?, 1, 70)`,
+              [newId, patCode, row.dob || '1990-01-01', row.gender || 'Other', row.address || 'Not provided']
+            );
+          } else if (roleObj.is_staff) {
+            db.run(
+              `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, qualification, joining_date, employment_status, base_salary)
+               VALUES (?, ?, ?, ?, ?, ?, date('now'), 'Active', ?)`,
+              [newId, empId || `EMP-${uCode}`, deptMatch?.id || null, branchMatch?.id || 1, roleObj.name.toUpperCase(), row.qualification || null, roleObj.code === 'doctor' ? 14000 : 5500]
+            );
+          }
+
+          if (roleObj.code === 'doctor') {
+            db.run(
+              `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, registration_number, medical_council, schedule_configured)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+              [newId, `DR-${uCode.split('-')[1]}`, specMatch.id, deptMatch?.id || specMatch.department_id || 1, branchMatch?.id || 1, row.qualification || 'MD', Number(row.experience_years || 5), Number(row.consultation_fee || 100), regNo || `REG-${uCode}`, council || null]
+            );
+          }
+
+          return newId;
+        })();
+        createdUsers.push({ id: uid, email, role: roleObj.code, user_code: uCode });
+      } catch (err) {
+        errors.push({ row: rowNum, email, message: err.message || 'Database insert error.' });
+      }
+    }
+
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.members_csv_imported',
+      entityType: 'user',
+      entityId: req.user.id,
+      details: JSON.stringify({ createdCount: createdUsers.length, errorCount: errors.length })
+    });
+    if (broker && createdUsers.length > 0) {
+      broker.publish('member:registered', { count: createdUsers.length, title: 'Bulk CSV Import', message: `${createdUsers.length} account(s) imported by administrator.` }, { roles: ['admin', 'hr'] });
+    }
+
+    res.json({
+      createdCount: createdUsers.length,
+      skippedCount: errors.length,
+      errors,
+      createdUsers
+    });
   }));
 }

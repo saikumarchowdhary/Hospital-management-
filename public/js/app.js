@@ -40,6 +40,23 @@ async function refreshNotifications() {
   } catch {
     // exact first error already recorded by api.js
   }
+  if (currentUser?.role === 'admin') {
+    try {
+      const reqRes = await api.get('/api/admin/signup-requests', { suppressErrorLog: true });
+      const navItem = root.querySelector('[data-route="admin/members"]');
+      if (navItem) {
+        let b = navItem.querySelector('.pending-nav-badge');
+        if (!b) {
+          b = document.createElement('span');
+          b.className = 'status status-warning pending-nav-badge';
+          b.style.cssText = 'margin-left:auto;font-size:11px;padding:1px 6px';
+          navItem.appendChild(b);
+        }
+        b.textContent = String(reqRes.pendingCount || 0);
+        b.style.display = (reqRes.pendingCount || 0) > 0 ? 'inline-flex' : 'none';
+      }
+    } catch { /* ignore */ }
+  }
 }
 
 function renderNotifList() {

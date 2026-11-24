@@ -24,24 +24,24 @@ export function seedOperationsData(db, deptMap, mainBranchId) {
   ];
   for (const [sku, name, gen, cat, unit, price, reorder] of meds) {
     db.run(
-      'INSERT INTO medicines (sku, name, generic_name, category_id, unit, unit_price, reorder_level) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO medicines (sku, name, generic_name, category_id, unit, unit_price, reorder_level) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [sku, name, gen, catRows[cat], unit, price, reorder]
     );
     const m = db.get('SELECT id FROM medicines WHERE sku = ?', [sku]);
     const qty = sku === 'MED-005' ? 12 : 180;
     db.run(
-      `INSERT INTO medicine_batches (medicine_id, batch_number, expiry_date, quantity_received, quantity_available, cost_price)
+      `INSERT OR IGNORE INTO medicine_batches (medicine_id, batch_number, expiry_date, quantity_received, quantity_available, cost_price)
        VALUES (?, ?, '2027-08-31', ?, ?, ?)`,
       [m.id, `BCH-${sku}`, qty, qty, price * 0.6]
     );
-    db.run('INSERT INTO pharmacy_inventory (medicine_id, total_quantity) VALUES (?, ?)', [m.id, qty]);
+    db.run('INSERT OR IGNORE INTO pharmacy_inventory (medicine_id, total_quantity) VALUES (?, ?)', [m.id, qty]);
   }
 
   // Sample Prescription for Sarah Jenkins
   const med1 = db.get('SELECT id, name FROM medicines WHERE sku = ?', ['MED-001']);
   const cons = db.get('SELECT id FROM consultations LIMIT 1');
   db.run(
-    `INSERT INTO prescriptions (prescription_ref, consultation_id, patient_id, doctor_id, status, notes, created_by)
+    `INSERT OR IGNORE INTO prescriptions (prescription_ref, consultation_id, patient_id, doctor_id, status, notes, created_by)
      VALUES ('RX-2026-1001', ?, ?, ?, 'Requested', 'Take once daily in the morning (Sample)', ?)`,
     [cons ? cons.id : null, pat1.id, doc1.id, docUser.id]
   );
@@ -64,7 +64,7 @@ export function seedOperationsData(db, deptMap, mainBranchId) {
     ['TROP', 'Troponin-I High Sensitivity', 'Cardiac Markers', 75, 'ng/L', '< 14', 'Cardiac muscle injury biomarker']
   ];
   for (const [code, name, cat, price, unit, ref, desc] of labTests) {
-    db.run('INSERT INTO lab_tests (code, name, category_id, price, unit, reference_range, description) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    db.run('INSERT OR IGNORE INTO lab_tests (code, name, category_id, price, unit, reference_range, description) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [code, name, lCat[cat], price, unit, ref, desc]);
   }
   const cbc = db.get('SELECT id, unit, reference_range FROM lab_tests WHERE code = ?', ['CBC']);

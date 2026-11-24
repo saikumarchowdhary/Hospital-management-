@@ -3,7 +3,7 @@ import { body } from 'express-validator';
 import { AppError, asyncHandler } from '../middleware/errors.js';
 import { requirePermission } from '../middleware/roles.js';
 import { validateRequest } from '../middleware/validation.js';
-import { allocateBedTx, createAdmissionTx, dischargePatientTx } from '../services/admissions.js';
+import { allocateBedTx, createAdmissionTx, dischargePatientTx, transferBedTx } from '../services/admissions.js';
 import { validateAndRecordTransition } from '../services/workflow.js';
 
 export function createAdmissionsRouter(db, broker, authenticate) {
@@ -91,6 +91,43 @@ export function createAdmissionsRouter(db, broker, authenticate) {
         actor: req.user
       });
       res.json(result);
+    })
+  );
+
+  router.get('/transfers', requirePermission('admissions.manage', 'patients.read_all'), asyncHandler(async (_req, res) => {
+    const transfers = db.all(
+      `SELECT bt.*, pu.full_name as patient_name, fb.bed_code as from_bed_code, tb.bed_code as to_bed_code,
+              u.full_name as actor_name
+       FROM bed_transfers bt
+       JOIN patient_profiles p ON p.id = bt.patient_id
+       JOIN users pu ON pu.id = p.user_id
+       JOIN beds fb ON fb.id = bt.from_bed_id
+       JOIN beds tb ON tb.id = bt.to_bed_id
+       JOIN users u ON u.id = bt.transferred_by
+       ORDER BY bt.id DESC LIMIT 100`
+    );
+    res.json({ transfers });
+  }));
+
+  router.post(
+    '/transfer',
+    requirePermission('admissions.manage'),
+    [
+      body('from_bed_id').isInt().withMessage('Origin bed is required.'),
+      body('to_bed_id').isInt().withMessage('Destination bed is required.'),
+      body('reason').trim().notEmpty().withMessage('Reason for transfer is mandatory.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => {
+      const result = transferBedTx(db, broker, {
+        fromBedId: Number(req.body.from_bed_id),
+        toBedId: Number(req.body.to_bed_id),
+        reason: req.body.reason,
+        patientId: req.body.patient_id ? Number(req.body.patient_id) : null,
+        releaseStatus: req.body.release_status || 'Cleaning',
+        actor: req.user
+      });
+      res.status(201).json(result);
     })
   );
 

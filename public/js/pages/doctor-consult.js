@@ -125,7 +125,7 @@ export async function openConsultationModal({ appointmentId, patientId, patientN
 }
 
 export function openAvailabilityModal(doctor, onSaved) {
-  const firstSched = (doctor.schedules && doctor.schedules[0]) || { start_time: '09:00', end_time: '17:00', slot_minutes: 30 };
+  const firstSched = (doctor.schedules && doctor.schedules[0]) || { start_time: '09:00', end_time: '17:00', slot_minutes: 30, break_start: '', break_end: '' };
   const activeDays = new Set((doctor.schedules || []).map((s) => s.day_of_week));
   openModal('Manage Doctor Availability & Schedule', `
     <form id="doc-avail-form" style="display:flex;flex-direction:column;gap:12px">
@@ -138,6 +138,13 @@ export function openAvailabilityModal(doctor, onSaved) {
         <div class="field"><label for="da-fee">Consultation Fee ($)</label><input id="da-fee" name="consultation_fee" type="number" min="10" value="${doctor.consultation_fee}" required /></div>
         <div class="field"><label for="da-start">Shift Start</label><input id="da-start" name="start_time" type="time" value="${esc(firstSched.start_time)}" required /></div>
         <div class="field"><label for="da-end">Shift End</label><input id="da-end" name="end_time" type="time" value="${esc(firstSched.end_time)}" required /></div>
+        <div class="field"><label for="da-slot">Slot Length</label>
+          <select id="da-slot" name="slot_minutes">
+            ${[15, 20, 30, 45, 60].map((m) => `<option value="${m}" ${Number(firstSched.slot_minutes || 30) === m ? 'selected' : ''}>${m} minutes</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label for="da-bstart">Break Start (Optional)</label><input id="da-bstart" name="break_start" type="time" value="${esc(firstSched.break_start || '')}" /></div>
+        <div class="field"><label for="da-bend">Break End (Optional)</label><input id="da-bend" name="break_end" type="time" value="${esc(firstSched.break_end || '')}" /></div>
       </div>
       <div>
         <div class="text-xs muted" style="margin-bottom:6px">Working Days</div>
@@ -153,16 +160,24 @@ export function openAvailabilityModal(doctor, onSaved) {
       e.preventDefault();
       const fd = new FormData(e.target);
       const selectedDays = Array.from(body.querySelectorAll('input[name="days"]:checked')).map((c) => Number(c.value));
+      const slotMin = Number(fd.get('slot_minutes') || 30);
+      const bStart = fd.get('break_start') || null;
+      const bEnd = fd.get('break_end') || null;
       const schedules = selectedDays.map((day) => ({
         day_of_week: day,
         start_time: fd.get('start_time'),
         end_time: fd.get('end_time'),
-        slot_minutes: 30
+        slot_minutes: slotMin,
+        break_start: bStart,
+        break_end: bEnd
       }));
       try {
         await api.put(`/api/doctors/${doctor.id}/schedules`, {
           availability_status: fd.get('availability_status'),
           consultation_fee: Number(fd.get('consultation_fee')),
+          slot_minutes: slotMin,
+          break_start: bStart,
+          break_end: bEnd,
           schedules
         });
         toast('Availability Updated', '', 'success');

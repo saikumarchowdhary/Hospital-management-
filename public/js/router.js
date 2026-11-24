@@ -41,6 +41,7 @@ const DEFAULT_ROUTES = {
   publisher: 'publisher',
   approver: 'publisher',
   housekeeping: 'housekeeping',
+  housekeeping_supervisor: 'housekeeping',
   bloodbank_staff: 'bloodbank',
   external_coordinator: 'external'
 };
@@ -79,7 +80,7 @@ export function getNavForRole(role) {
       title: 'Overview',
       items: [
         { route: 'admin/dashboard', label: 'Dashboard', iconKey: 'home', roles: ['admin'] },
-        { route: 'admin/members', label: 'All Members', iconKey: 'user', roles: ['admin'] },
+        { route: 'admin/members', label: 'Users & Signups', iconKey: 'user', roles: ['admin'] },
         { route: 'reports', label: 'Reports & Export', iconKey: 'activity', roles: ['admin', 'doctor', 'case_manager', 'lab_staff', 'radiologist', 'pharmacist', 'accountant', 'hr', 'bloodbank_staff'] },
         { route: 'admin/control', label: 'Admin Control', iconKey: 'shield', roles: ['admin'] }
       ]
@@ -91,7 +92,7 @@ export function getNavForRole(role) {
         { route: 'doctor/portal', label: 'Doctor Workspace', iconKey: 'activity', roles: ['admin', 'doctor'] },
         { route: 'nurse/portal', label: 'Nurse Care', iconKey: 'activity', roles: ['admin', 'nurse'] },
         { route: 'admissions', label: 'Admissions & Care', iconKey: 'file', roles: ['admin', 'doctor', 'nurse', 'receptionist', 'case_manager'] },
-        { route: 'beds', label: 'Bed Board', iconKey: 'home', roles: ['admin', 'doctor', 'nurse', 'receptionist', 'case_manager', 'housekeeping'] }
+        { route: 'beds', label: 'Bed Board', iconKey: 'home', roles: ['admin', 'doctor', 'nurse', 'receptionist', 'case_manager', 'housekeeping', 'housekeeping_supervisor'] }
       ]
     },
     {
@@ -109,7 +110,7 @@ export function getNavForRole(role) {
         { route: 'finance', label: 'Billing & Finance', iconKey: 'card', roles: ['admin', 'accountant', 'receptionist'] },
         { route: 'insurance', label: 'Insurance / TPA', iconKey: 'shield', roles: ['admin', 'accountant', 'receptionist', 'case_manager'] },
         { route: 'hr', label: 'HR & Payroll', iconKey: 'user', roles: ['admin', 'hr'] },
-        { route: 'housekeeping', label: 'Housekeeping', iconKey: 'home', roles: ['admin', 'housekeeping', 'nurse', 'case_manager'] },
+        { route: 'housekeeping', label: 'Housekeeping', iconKey: 'home', roles: ['admin', 'housekeeping', 'housekeeping_supervisor', 'nurse', 'case_manager'] },
         { route: 'external', label: 'External Coord.', iconKey: 'file', roles: ['admin', 'external_coordinator', 'case_manager'] }
       ]
     },
@@ -157,7 +158,7 @@ const ROUTE_TABLE = {
   'nurse/portal': { roles: ['admin', 'nurse'], render: (el) => renderNursePortal(el) },
   'reception/portal': { roles: ['admin', 'receptionist'], render: (el) => renderReceptionistPortal(el) },
   admissions: { roles: ['admin', 'doctor', 'nurse', 'receptionist', 'case_manager'], render: (el) => renderAdmissionsPage(el) },
-  beds: { roles: ['admin', 'doctor', 'nurse', 'receptionist', 'case_manager', 'housekeeping'], render: (el) => renderBedsPage(el) },
+  beds: { roles: ['admin', 'doctor', 'nurse', 'receptionist', 'case_manager', 'housekeeping', 'housekeeping_supervisor'], render: (el) => renderBedsPage(el) },
   laboratory: { roles: ['admin', 'doctor', 'lab_staff'], render: (el) => renderLaboratoryPage(el) },
   radiology: { roles: ['admin', 'doctor', 'lab_staff', 'radiologist'], render: (el) => renderRadiologyPage(el) },
   pharmacy: { roles: ['admin', 'pharmacist'], render: (el) => renderPharmacyPage(el) },
@@ -168,7 +169,7 @@ const ROUTE_TABLE = {
   'hr/careers': { roles: ['candidate', 'admin', 'hr'], render: (el, u) => renderHrPage(el, u) },
   publisher: { roles: ['admin', 'publisher', 'approver'], render: (el, u) => renderPublisherPage(el, u) },
   campaigns: { roles: ['admin', 'publisher', 'approver'], render: (el, u) => renderCampaignsPage(el, u) },
-  housekeeping: { roles: ['admin', 'housekeeping', 'nurse', 'case_manager'], render: (el) => renderHousekeepingPage(el) },
+  housekeeping: { roles: ['admin', 'housekeeping', 'housekeeping_supervisor', 'nurse', 'case_manager'], render: (el) => renderHousekeepingPage(el) },
   external: { roles: ['admin', 'external_coordinator', 'case_manager'], render: (el) => renderExternalPage(el) },
   reports: { roles: ['admin', 'doctor', 'case_manager', 'lab_staff', 'radiologist', 'pharmacist', 'accountant', 'hr', 'bloodbank_staff'], render: (el) => renderReportsPage(el) }
 };

@@ -75,7 +75,17 @@ export function createLoginRateLimiter() {
 
 export function csrfProtect(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
-  const publicAuthPaths = ['/api/auth/login', '/api/auth/register', '/api/auth/refresh', '/api/auth/forgot-password', '/api/auth/reset-password'];
+  const publicAuthPaths = [
+    '/api/auth/login',
+    '/api/auth/register',
+    '/api/auth/refresh',
+    '/api/auth/forgot-password',
+    '/api/auth/reset-password',
+    '/api/auth/setup-admin',
+    '/api/auth/send-otp',
+    '/api/auth/verify-otp',
+    '/api/integrations/webhooks/payment'
+  ];
   if (publicAuthPaths.includes(req.path)) {
     return next();
   }
@@ -127,8 +137,9 @@ export function hydrateAuthenticatedUser(db, userId) {
     user.patient_code = pat ? pat.patient_code : null;
   }
   if (user.role === 'doctor') {
-    const doc = db.get('SELECT id, doctor_code FROM doctor_profiles WHERE user_id = ?', [user.id]);
+    const doc = db.get('SELECT id, doctor_code, schedule_configured FROM doctor_profiles WHERE user_id = ?', [user.id]);
     user.doctor_id = doc ? doc.id : null;
+    user.schedule_configured = doc ? Boolean(doc.schedule_configured) : false;
   }
   if (user.is_staff) {
     const emp = db.get('SELECT id, employee_code FROM employee_profiles WHERE user_id = ?', [user.id]);
@@ -159,8 +170,8 @@ export function createAuthMiddleware(db, jwtSecret) {
         return res.status(401).json({ error: 'Invalid token type. Access token required.' });
       }
       const user = hydrateAuthenticatedUser(db, decoded.sub);
-      if (!user || !user.is_active || user.account_status !== 'Active') {
-        return res.status(401).json({ error: 'Account is inactive, suspended, or pending approval.' });
+      if (!user || !user.is_active || user.account_status !== 'Active' || user.role === 'pending_staff') {
+        return res.status(401).json({ error: 'Account is inactive, suspended, or pending verification.' });
       }
       req.user = user;
       return next();

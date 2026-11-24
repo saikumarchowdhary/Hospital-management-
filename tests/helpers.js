@@ -3,18 +3,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHmsApp } from '../server.js';
 
-export async function startTestServer() {
+export async function startTestServer(options = {}) {
+  const { seedDemo = true } = options;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'medicore-test-'));
   const dbPath = path.join(tmpDir, 'hms.db');
   const uploadDir = path.join(tmpDir, 'uploads');
   const dataDir = path.join(tmpDir, 'data');
 
-  const { app, db } = createHmsApp({ dbPath, uploadDir, dataDir, jwtSecret: 'medicore-test-secret-key' });
+  const { app, db, attachWebSocket } = createHmsApp({ dbPath, uploadDir, dataDir, jwtSecret: 'medicore-test-secret-key', seedDemo });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
+  const wss = attachWebSocket(server);
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
+  const wsBaseUrl = `ws://127.0.0.1:${port}`;
 
   function createClient() {
     const cookies = new Map();
@@ -65,10 +68,16 @@ export async function startTestServer() {
   }
 
   async function close() {
+    if (wss) {
+      for (const client of wss.clients) {
+        try { client.terminate(); } catch {}
+      }
+      await new Promise((resolve) => wss.close(resolve));
+    }
     await new Promise((resolve) => server.close(resolve));
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 
-  return { baseUrl, dbPath, uploadDir, dataDir, db, createClient, close };
+  return { baseUrl, wsBaseUrl, dbPath, uploadDir, dataDir, db, createClient, close };
 }

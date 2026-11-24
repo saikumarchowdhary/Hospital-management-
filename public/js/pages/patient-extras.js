@@ -130,14 +130,14 @@ export function renderPatientSupport(container, _user, navigate) {
         <div class="card" style="background:var(--bg)">
           <h3>Billing & Insurance Help</h3>
           <p class="text-sm muted" style="margin:6px 0">Invoice inquiries, itemized receipts, and TPA claims desk.</p>
-          <strong class="mono">billing@medicore.demo</strong>
+          <strong class="mono">billing@medicore-hms.org</strong>
         </div>
       </div>
       <div style="margin-top:16px">
         <h3>Common Patient Actions</h3>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
           <button class="btn btn-primary btn-sm" data-nav="patient/book">Book Doctor Visit</button>
-          <button class="btn btn-sm" data-nav="patient/specialties">Explore 24 Specializations</button>
+          <button class="btn btn-sm" data-nav="patient/specialties">Explore Medical Specializations</button>
           <button class="btn btn-sm" data-nav="patient/documents">Upload Outside Records</button>
           <button class="btn btn-sm" data-nav="patient/payments">View Pending Invoices</button>
         </div>

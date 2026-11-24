@@ -151,3 +151,121 @@ export function dischargePatientTx(db, broker, { admissionId, summary, followUpI
     return { admission: db.get('SELECT * FROM admissions WHERE id = ?', [adm.id]), housekeepingTask };
   })();
 }
+
+export function transferBedTx(db, broker, { fromBedId, toBedId, reason, patientId = null, releaseStatus = 'Cleaning', actor }) {
+  return db.transaction(() => {
+    const cleanReason = String(reason || '').trim();
+    if (!cleanReason) {
+      throw new AppError(400, 'Transfer reason is required for clinical compliance.');
+    }
+    if (!fromBedId || !toBedId) {
+      throw new AppError(400, 'Both origin bed and destination bed are required.');
+    }
+    if (Number(fromBedId) === Number(toBedId)) {
+      throw new AppError(400, 'Origin bed and destination bed cannot be the same.');
+    }
+    const allowedRelease = ['Cleaning', 'Available'].includes(releaseStatus) ? releaseStatus : 'Cleaning';
+
+    const fromBed = db.get('SELECT * FROM beds WHERE id = ?', [Number(fromBedId)]);
+    if (!fromBed) throw new AppError(404, 'Origin bed not found.');
+
+    const toBed = db.get('SELECT * FROM beds WHERE id = ?', [Number(toBedId)]);
+    if (!toBed) throw new AppError(404, 'Destination bed not found.');
+
+    if (toBed.status !== 'Available') {
+      throw new AppError(409, `Destination bed ${toBed.bed_code} is ${toBed.status} and cannot accept transfers.`);
+    }
+    const existingTargetAlloc = db.get('SELECT id FROM bed_allocations WHERE bed_id = ? AND status = ?', [toBed.id, 'Active']);
+    if (existingTargetAlloc) {
+      throw new AppError(409, `Destination bed ${toBed.bed_code} already has an active allocation.`);
+    }
+
+    const activeOriginAlloc = db.get(
+      `SELECT ba.*, a.id as adm_id, a.admission_ref, a.patient_id, a.status as adm_status,
+              p.user_id as patient_user_id, u.full_name as patient_name
+       FROM bed_allocations ba
+       JOIN admissions a ON a.id = ba.admission_id
+       JOIN patient_profiles p ON p.id = a.patient_id
+       JOIN users u ON u.id = p.user_id
+       WHERE ba.bed_id = ? AND ba.status = 'Active'`,
+      [fromBed.id]
+    );
+    if (!activeOriginAlloc) {
+      throw new AppError(409, `Origin bed ${fromBed.bed_code} has no active patient admission to transfer.`);
+    }
+    if (patientId && Number(patientId) !== activeOriginAlloc.patient_id) {
+      throw new AppError(409, `Origin bed ${fromBed.bed_code} is assigned to a different patient.`);
+    }
+
+    // Optimistic atomic lock on destination bed inside transaction
+    const lockRes = db.run(
+      `UPDATE beds SET status = 'Occupied', updated_at = datetime('now') WHERE id = ? AND status = 'Available'`,
+      [toBed.id]
+    );
+    if (lockRes.changes !== 1) {
+      throw new AppError(409, `Concurrent conflict: Bed ${toBed.bed_code} is no longer available.`);
+    }
+
+    db.run(
+      `UPDATE bed_allocations SET status = 'Released', released_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      [activeOriginAlloc.id]
+    );
+    db.run(
+      `UPDATE beds SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+      [allowedRelease, fromBed.id]
+    );
+    db.run(
+      `INSERT INTO bed_allocations (admission_id, bed_id, allocated_by, status) VALUES (?, ?, ?, 'Active')`,
+      [activeOriginAlloc.adm_id, toBed.id, actor.id]
+    );
+    db.run(
+      `UPDATE admissions SET bed_id = ?, updated_at = datetime('now') WHERE id = ?`,
+      [toBed.id, activeOriginAlloc.adm_id]
+    );
+
+    const transferRef = `TRF-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
+    const trfInfo = db.run(
+      `INSERT INTO bed_transfers (transfer_ref, admission_id, patient_id, from_bed_id, to_bed_id, reason, transferred_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [transferRef, activeOriginAlloc.adm_id, activeOriginAlloc.patient_id, fromBed.id, toBed.id, cleanReason, actor.id]
+    );
+
+    db.run(
+      `INSERT INTO workflow_history (entity_type, entity_id, from_status, to_status, actor_id, notes)
+       VALUES ('admission', ?, ?, ?, ?, ?)`,
+      [activeOriginAlloc.adm_id, activeOriginAlloc.adm_status, activeOriginAlloc.adm_status, actor.id, `Bed transfer ${fromBed.bed_code} -> ${toBed.bed_code}: ${cleanReason}`]
+    );
+
+    const beforeState = { bed_id: fromBed.id, bed_code: fromBed.bed_code, status: fromBed.status, patient: activeOriginAlloc.patient_name };
+    const afterState = { bed_id: toBed.id, bed_code: toBed.bed_code, status: 'Occupied', origin_status: allowedRelease, patient: activeOriginAlloc.patient_name, reason: cleanReason };
+
+    db.run(
+      `INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, details)
+       VALUES (?, ?, 'bed.transferred', 'bed_transfer', ?, ?)`,
+      [actor.id, actor.role, String(trfInfo.lastInsertRowid), JSON.stringify({ transferRef, before: beforeState, after: afterState })]
+    );
+
+    if (broker) {
+      broker.publish('bed:transferred', {
+        transferId: trfInfo.lastInsertRowid,
+        transferRef,
+        admissionId: activeOriginAlloc.adm_id,
+        patientName: activeOriginAlloc.patient_name,
+        fromBedId: fromBed.id,
+        fromBedCode: fromBed.bed_code,
+        toBedId: toBed.id,
+        toBedCode: toBed.bed_code,
+        reason: cleanReason,
+        title: 'Bed Transfer Verified',
+        message: `${activeOriginAlloc.patient_name} transferred from ${fromBed.bed_code} to ${toBed.bed_code}.`
+      }, { userId: activeOriginAlloc.patient_user_id, roles: ['nurse', 'doctor', 'case_manager', 'housekeeping', 'admin'] });
+    }
+
+    return {
+      transfer: db.get('SELECT * FROM bed_transfers WHERE id = ?', [trfInfo.lastInsertRowid]),
+      admission: db.get('SELECT * FROM admissions WHERE id = ?', [activeOriginAlloc.adm_id]),
+      fromBed: db.get('SELECT * FROM beds WHERE id = ?', [fromBed.id]),
+      toBed: db.get('SELECT * FROM beds WHERE id = ?', [toBed.id])
+    };
+  })();
+}

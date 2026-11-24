@@ -63,9 +63,15 @@ export async function renderBookAppointment(container, user, navigate, query = {
         (!state.branchId || String(d.branch_id) === state.branchId) &&
         (!state.departmentId || String(d.department_id) === state.departmentId)
       );
-      const list = filtered.length ? filtered : doctors;
       const docSelect = container.querySelector('#bk-doc');
-      docSelect.innerHTML = list.map((d) => `<option value="${d.id}" ${String(d.id) === state.doctorId ? 'selected' : ''}>${esc(d.full_name)} — ${esc(d.specialty_name)} (${fmtMoney(d.consultation_fee)})</option>`).join('');
+      if (!filtered.length) {
+        docSelect.innerHTML = '<option value="">No verified doctors available for this selection</option>';
+        state.doctorId = '';
+        container.querySelector('#bk-slots').innerHTML = emptyState('No doctors available', 'Try selecting another branch or department, or wait until a doctor completes verification.');
+        renderReview();
+        return;
+      }
+      docSelect.innerHTML = filtered.map((d) => `<option value="${d.id}" ${String(d.id) === state.doctorId ? 'selected' : ''}>${esc(d.full_name)} — ${esc(d.specialty_name)} (${fmtMoney(d.consultation_fee)})</option>`).join('');
       state.doctorId = docSelect.value;
       loadSlots();
     }
@@ -76,6 +82,11 @@ export async function renderBookAppointment(container, user, navigate, query = {
       slotsEl.innerHTML = '<span class="muted text-sm">Checking real-time availability...</span>';
       const res = await api.get(`/api/doctors/${state.doctorId}/slots?date=${state.date}`);
       state.time = '';
+      if (!res.slots || !res.slots.length) {
+        slotsEl.innerHTML = '<span class="muted text-sm">No available slots on this date. Please choose another working day.</span>';
+        renderReview();
+        return;
+      }
       slotsEl.innerHTML = res.slots.map((s) => {
         const avail = s.status === 'Available';
         return `<button type="button" class="btn btn-sm slot-pick-btn" data-time="${s.slot_time}" ${avail ? '' : 'disabled'}>${s.slot_time} ${avail ? '' : '(Booked)'}</button>`;

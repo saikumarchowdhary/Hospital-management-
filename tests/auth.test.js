@@ -11,8 +11,8 @@ test('Auth: patient registration, duplicate prevention, and staff self-registrat
   const ctx = await startTestServer();
   try {
     const c = ctx.createClient();
-    // Attempt to register with staff account_type='admin' must downgrade to patient (never staff)
-    const reg = await c.post('/api/auth/register', {
+    // Attempt to register with account_type='admin' must be rejected (403)
+    const blockedAdmin = await c.post('/api/auth/register', {
       full_name: 'Alice Walker',
       email: 'alice@example.com',
       mobile: '+1-555-9901',
@@ -21,6 +21,19 @@ test('Auth: patient registration, duplicate prevention, and staff self-registrat
       address: '45 Pine Ave',
       password: 'Password123',
       account_type: 'admin',
+      consent: true
+    });
+    assert.equal(blockedAdmin.status, 403);
+
+    // Normal patient registration succeeds (201) and is never staff
+    const reg = await c.post('/api/auth/register', {
+      full_name: 'Alice Walker',
+      email: 'alice@example.com',
+      mobile: '+1-555-9901',
+      dob: '1993-06-11',
+      gender: 'Female',
+      address: '45 Pine Ave',
+      password: 'Password123',
       consent: true
     });
     assert.equal(reg.status, 201);

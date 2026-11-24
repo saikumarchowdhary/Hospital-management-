@@ -14,35 +14,36 @@ export function seedClinicalData(db, roleMap, deptMap) {
 
   // Additional doctors & patients so directory, charts and beds feel realistic
   const extraDocs = [
-    { code: 'DOC-2002', email: 'dr.patel@demo.com', name: 'Dr. Vikram Patel', spec: 'Internal Medicine', dept: 'General Medicine', branch: 'MAIN', qual: 'MD, FACP', exp: 14, fee: 95 },
-    { code: 'DOC-2003', email: 'dr.chen@demo.com', name: 'Dr. Mei Chen', spec: 'Neurology', dept: 'Neurology', branch: 'NORTH', qual: 'MD, PhD Neurology', exp: 11, fee: 140 },
-    { code: 'DOC-2004', email: 'dr.miller@demo.com', name: 'Dr. Lucas Miller', spec: 'Orthopedic Surgery', dept: 'Orthopedics', branch: 'SOUTH', qual: 'MS Orthopedics', exp: 16, fee: 130 },
-    { code: 'DOC-2005', email: 'dr.ahmed@demo.com', name: 'Dr. Layla Ahmed', spec: 'Pediatrics', dept: 'Pediatrics', branch: 'MAIN', qual: 'MD Pediatrics', exp: 9, fee: 85 }
+    { code: 'DOC-2002', email: 'dr.patel@demo.com', name: 'Dr. Vikram Patel', spec: 'General Physician', dept: 'General Medicine', branch: 'MAIN', qual: 'MD, FACP', exp: 14, fee: 95 },
+    { code: 'DOC-2003', email: 'dr.chen@demo.com', name: 'Dr. Mei Chen', spec: 'Neurologist', dept: 'Neurology', branch: 'NORTH', qual: 'MD, PhD Neurology', exp: 11, fee: 140 },
+    { code: 'DOC-2004', email: 'dr.miller@demo.com', name: 'Dr. Lucas Miller', spec: 'Orthopedic Doctor', dept: 'Orthopedics', branch: 'SOUTH', qual: 'MS Orthopedics', exp: 16, fee: 130 },
+    { code: 'DOC-2005', email: 'dr.ahmed@demo.com', name: 'Dr. Layla Ahmed', spec: 'Pediatrician', dept: 'Pediatrics', branch: 'MAIN', qual: 'MD Pediatrics', exp: 9, fee: 85 }
   ];
 
+  const defaultSpecId = Object.values(specMap)[0];
   const defaultDocPass = bcrypt.hashSync('Doctor@123', 10);
   db.run(
-    `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating)
-     VALUES (?, 'DR-2001', ?, ?, ?, 'MD, FACC Cardiology', 12, 120, 'Senior Interventional Cardiologist specializing in preventive heart care.', 4.9)`,
-    [docUser.id, specMap['Cardiology'], deptMap['Cardiology'], branchMap['MAIN']]
+    `INSERT OR IGNORE INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, schedule_configured)
+     VALUES (?, 'DR-2001', ?, ?, ?, 'MD, FACC Cardiology', 12, 120, 'Senior Interventional Cardiologist specializing in preventive heart care.', 4.9, 1)`,
+    [docUser.id, specMap['Cardiologist'] || specMap['Cardiology'] || defaultSpecId, deptMap['Cardiology'], branchMap['MAIN']]
   );
 
   for (const d of extraDocs) {
     db.run(
-      `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id)
+      `INSERT OR IGNORE INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id)
        VALUES (?, ?, ?, ?, '+1-555-0299', ?, ?, ?)`,
       [d.code, d.email, defaultDocPass, d.name, roleMap['doctor'], branchMap[d.branch], deptMap[d.dept]]
     );
     const u = db.get('SELECT id FROM users WHERE email = ?', [d.email]);
     db.run(
-      `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, base_salary)
+      `INSERT OR IGNORE INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, base_salary)
        VALUES (?, ?, ?, ?, 'CONSULTANT DOCTOR', '2024-02-01', 14000)`,
       [u.id, `EMP-${d.code}`, deptMap[d.dept], branchMap[d.branch]]
     );
     db.run(
-      `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8)`,
-      [u.id, d.code, specMap[d.spec], deptMap[d.dept], branchMap[d.branch], d.qual, d.exp, d.fee, `Board-certified specialist in ${d.spec}.`]
+      `INSERT OR IGNORE INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, schedule_configured)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 1)`,
+      [u.id, d.code, specMap[d.spec] || defaultSpecId, deptMap[d.dept], branchMap[d.branch], d.qual, d.exp, d.fee, `Board-certified specialist in ${d.spec}.`]
     );
   }
 
@@ -121,23 +122,26 @@ export function seedClinicalData(db, roleMap, deptMap) {
   const cons = db.get('SELECT id FROM consultations WHERE appointment_id = ?', [pastApt.id]);
   db.run('INSERT INTO diagnoses (consultation_id, patient_id, icd_code, diagnosis_text, severity, created_by) VALUES (?, ?, ?, ?, ?, ?)', [cons.id, pat1.id, 'I10', 'Essential (primary) hypertension - Sample', 'Mild', docUser.id]);
 
-  // Wards, Rooms, Beds
-  const wards = [
-    [branchMap['MAIN'], deptMap['Cardiology'], 'Cardiac Care Ward A', 'ICU', '3rd Floor'],
-    [branchMap['MAIN'], deptMap['General Medicine'], 'General Medical Ward B', 'General', '2nd Floor'],
-    [branchMap['MAIN'], deptMap['General Surgery'], 'Surgical Recovery Ward C', 'Private', '4th Floor']
-  ];
-  for (const w of wards) {
-    db.run('INSERT INTO wards (branch_id, department_id, name, ward_type, floor) VALUES (?, ?, ?, ?, ?)', w);
+  // Wards, Rooms, Beds (reuse structural wards if already seeded by reference seed)
+  const existingWardCount = db.get('SELECT COUNT(*) as cnt FROM wards')?.cnt || 0;
+  if (existingWardCount === 0) {
+    const wards = [
+      [branchMap['MAIN'], deptMap['Cardiology'], 'Cardiac Care Ward A', 'ICU', '3rd Floor'],
+      [branchMap['MAIN'], deptMap['General Medicine'], 'General Medical Ward B', 'General', '2nd Floor'],
+      [branchMap['MAIN'], deptMap['General Surgery'], 'Surgical Recovery Ward C', 'Private', '4th Floor']
+    ];
+    for (const w of wards) {
+      db.run('INSERT INTO wards (branch_id, department_id, name, ward_type, floor) VALUES (?, ?, ?, ?, ?)', w);
+    }
   }
   const wardRows = db.all('SELECT id, name FROM wards');
   for (const w of wardRows) {
     for (let r = 1; r <= 3; r++) {
       const rNum = `${w.id}0${r}`;
-      db.run('INSERT INTO rooms (ward_id, room_number, room_type, daily_rate) VALUES (?, ?, ?, ?)', [w.id, rNum, w.id === 1 ? 'ICU' : 'Standard', w.id === 1 ? 350 : 180]);
+      db.run('INSERT OR IGNORE INTO rooms (ward_id, room_number, room_type, daily_rate) VALUES (?, ?, ?, ?)', [w.id, rNum, w.id === 1 ? 'ICU' : 'Standard', w.id === 1 ? 350 : 180]);
       const room = db.get('SELECT id FROM rooms WHERE ward_id = ? AND room_number = ?', [w.id, rNum]);
       for (let b = 1; b <= 2; b++) {
-        db.run('INSERT INTO beds (room_id, bed_code, status) VALUES (?, ?, ?)', [room.id, `B-${rNum}-${b}`, 'Available']);
+        db.run('INSERT OR IGNORE INTO beds (room_id, bed_code, status) VALUES (?, ?, ?)', [room.id, `B-${rNum}-${b}`, 'Available']);
       }
     }
   }

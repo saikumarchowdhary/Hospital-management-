@@ -180,10 +180,12 @@ export function syncMasterSeedData(db, rolesList, permsList, rolePermMap, demoUs
           if (!doc) {
             const cardSpecId = specMap['Cardiologist'] || Object.values(specMap)[0];
             db.run(
-              `INSERT OR IGNORE INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, availability_status)
-               VALUES (?, ?, ?, ?, ?, 'MD, FACC', 12, 120, 'Senior Consultant Physician.', 4.9, 'Available')`,
+              `INSERT OR IGNORE INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, availability_status, schedule_configured)
+               VALUES (?, ?, ?, ?, ?, 'MD, FACC', 12, 120, 'Senior Consultant Physician.', 4.9, 'Available', 1)`,
               [userRow.id, u.code.replace('DOC-', 'DR-'), cardSpecId, targetDeptId || deptMap['Cardiology'], mainBranch.id]
             );
+          } else {
+            db.run('UPDATE doctor_profiles SET schedule_configured = 1 WHERE id = ?', [doc.id]);
           }
         }
       }
@@ -211,8 +213,8 @@ export function syncMasterSeedData(db, rolesList, permsList, rolePermMap, demoUs
       let docProf = db.get('SELECT id, branch_id FROM doctor_profiles WHERE user_id = ?', [userRow.id]);
       if (!docProf) {
         const dpInfo = db.run(
-          `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, availability_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 'Available')`,
+          `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, availability_status, schedule_configured)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 'Available', 1)`,
           [userRow.id, dCode, specMap[spec], deptMap[dept] || deptMap['General Medicine'], branchMap[br] || mainBranch.id, qual, exp, fee, `Board-certified ${spec} at MediCore HMS.`]
         );
         docProf = { id: dpInfo.lastInsertRowid, branch_id: branchMap[br] || mainBranch.id };

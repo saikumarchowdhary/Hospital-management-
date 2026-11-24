@@ -2,6 +2,7 @@ export class EventBroker {
   constructor(db) {
     this.db = db;
     this.clients = new Set();
+    this.wsClients = new Set();
   }
 
   addClient(res, user) {
@@ -15,6 +16,21 @@ export class EventBroker {
     this.clients.delete(client);
   }
 
+  addWsClient(ws, user) {
+    const client = { ws, userId: user.id, role: user.role, isStaff: Boolean(user.is_staff) };
+    this.wsClients.add(client);
+    try {
+      ws.send(JSON.stringify({ eventType: 'connected', userId: user.id, role: user.role, ts: new Date().toISOString() }));
+    } catch {
+      this.wsClients.delete(client);
+    }
+    return client;
+  }
+
+  removeWsClient(client) {
+    this.wsClients.delete(client);
+  }
+
   publish(eventType, payload, target = {}) {
     const targetRole = target.role || null;
     const targetRoles = target.roles || null;
@@ -26,7 +42,9 @@ export class EventBroker {
       [eventType, targetRoles ? targetRoles.join(',') : targetRole, targetUserId, JSON.stringify(payload)]
     );
 
-    const frame = `id: ${info.lastInsertRowid}\nevent: ${eventType}\ndata: ${JSON.stringify({ id: info.lastInsertRowid, eventType, ...payload, ts: new Date().toISOString() })}\n\n`;
+    const eventData = { id: info.lastInsertRowid, eventType, ...payload, ts: new Date().toISOString() };
+    const frame = `id: ${info.lastInsertRowid}\nevent: ${eventType}\ndata: ${JSON.stringify(eventData)}\n\n`;
+    const wsFrame = JSON.stringify(eventData);
 
     for (const client of this.clients) {
       if (this.canReceive(client, targetUserId, targetRole, targetRoles)) {
@@ -34,6 +52,18 @@ export class EventBroker {
           client.res.write(frame);
         } catch {
           this.clients.delete(client);
+        }
+      }
+    }
+
+    for (const client of this.wsClients) {
+      if (this.canReceive(client, targetUserId, targetRole, targetRoles)) {
+        try {
+          if (client.ws.readyState === 1) {
+            client.ws.send(wsFrame);
+          }
+        } catch {
+          this.wsClients.delete(client);
         }
       }
     }

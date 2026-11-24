@@ -12,9 +12,18 @@ const PORTAL_ROLES = [
 
 test('Master HMS: 15+ portal logins, employee ID login, and portal mismatch lock', async () => {
   const ctx = await startTestServer();
+  const prevVis = process.env.DEMO_ACCOUNTS_VISIBLE;
   try {
+    delete process.env.DEMO_ACCOUNTS_VISIBLE;
+    const hiddenDemo = await ctx.createClient().get('/api/demo-accounts');
+    assert.equal(hiddenDemo.status, 200);
+    assert.equal(hiddenDemo.data.visible, false);
+    assert.equal(hiddenDemo.data.accounts.length, 0);
+
+    process.env.DEMO_ACCOUNTS_VISIBLE = 'true';
     const demo = await ctx.createClient().get('/api/demo-accounts');
     assert.equal(demo.status, 200);
+    assert.equal(demo.data.visible, true);
     assert.ok(demo.data.accounts.length >= 17);
 
     for (const role of PORTAL_ROLES) {
@@ -35,6 +44,8 @@ test('Master HMS: 15+ portal logins, employee ID login, and portal mismatch lock
       assert.equal(mismatch.status, 403, `Expected 403 mismatch for ${role} on ${wrongPortal} portal`);
     }
   } finally {
+    if (prevVis === undefined) delete process.env.DEMO_ACCOUNTS_VISIBLE;
+    else process.env.DEMO_ACCOUNTS_VISIBLE = prevVis;
     await ctx.close();
   }
 });
@@ -83,7 +94,7 @@ test('Master HMS: patient non-empty dashboard, document upload/download, and cli
     const dash = await regClient.get('/api/patients/me/dashboard');
     assert.equal(dash.status, 200);
     assert.equal(dash.data.profile.full_name, 'Nora Hayes');
-    assert.ok(dash.data.profile.patient_code.startsWith('MRN-'));
+    assert.match(dash.data.profile.patient_code, /^PT-\d{6}$/);
     assert.equal(dash.data.releasedLabsCount, 0);
     assert.equal(dash.data.releasedRadiologyCount, 0);
 

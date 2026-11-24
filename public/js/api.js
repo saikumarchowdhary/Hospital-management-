@@ -14,6 +14,10 @@ const PUBLIC_AUTH_PATHS = new Set([
   '/api/auth/forgot-password',
   '/api/auth/reset-password',
   '/api/auth/registration-meta',
+  '/api/auth/setup-status',
+  '/api/auth/setup-admin',
+  '/api/auth/send-otp',
+  '/api/auth/verify-otp',
   '/api/demo-accounts'
 ]);
 

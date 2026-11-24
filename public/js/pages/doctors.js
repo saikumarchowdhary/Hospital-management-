@@ -23,12 +23,12 @@ export async function renderDoctorDiscovery(container, _user, navigate, query = 
             <h1>Doctor Directory (${meta.specialties.length} Medical Specializations)</h1>
             <p class="text-sm muted">Search specialists by name, department, or specialization and book available slots.</p>
           </div>
-          <button class="btn btn-sm" id="doc-spec-browse">Browse All 24 Specializations</button>
+          <button class="btn btn-sm" id="doc-spec-browse">Browse All Specializations</button>
         </div>
         <form id="doc-filter-form" class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
           <div class="field"><label for="df-q">Doctor / Specialty</label><input id="df-q" placeholder="Name, specialty or dept" /></div>
           <div class="field"><label for="df-spec">Specialization</label>
-            <select id="df-spec"><option value="">All 24 Specializations</option>${meta.specialties.map((s) => `<option value="${s.id}" ${String(s.id) === String(filters.specialtyId) ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+            <select id="df-spec"><option value="">All Specializations</option>${meta.specialties.map((s) => `<option value="${s.id}" ${String(s.id) === String(filters.specialtyId) ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
           </div>
           <div class="field"><label for="df-dept">Department</label>
             <select id="df-dept"><option value="">All Departments</option>${meta.departments.filter((d) => d.category === 'clinical' || d.category === 'diagnostic').map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
@@ -51,12 +51,16 @@ export async function renderDoctorDiscovery(container, _user, navigate, query = 
       const res = await api.get(`/api/doctors?${qs.toString()}`);
       const grid = container.querySelector('#doctors-results');
       if (!res.doctors.length) {
-        grid.innerHTML = `<div style="grid-column:1/-1">${emptyState('No doctors match these filters', 'Try clearing a filter to see available specialists.')}</div>`;
+        const hasFilters = Object.values(filters).some(Boolean);
+        grid.innerHTML = `<div style="grid-column:1/-1">${emptyState(
+          hasFilters ? 'No doctors match these filters' : 'No verified doctors available yet',
+          hasFilters ? 'Try clearing a filter to see available specialists.' : 'Verified and scheduled doctors will appear here automatically.'
+        )}</div>`;
         return;
       }
       grid.innerHTML = res.doctors.map((d) => {
-        const schedDays = (d.schedules || []).map((s) => DAYS[s.day_of_week]).join(', ') || 'Mon–Sat';
-        const slotWindow = (d.schedules && d.schedules[0]) ? `${d.schedules[0].start_time}–${d.schedules[0].end_time}` : '09:00–17:00';
+        const schedDays = (d.schedules || []).map((s) => DAYS[s.day_of_week]).join(', ') || 'Schedule not configured';
+        const slotWindow = (d.schedules && d.schedules[0]) ? `${d.schedules[0].start_time}–${d.schedules[0].end_time}` : 'Pending schedule';
         const availStatus = d.availability_status || 'Available';
         return `
           <div class="card" style="display:flex;flex-direction:column;justify-content:space-between;gap:12px">

@@ -316,14 +316,14 @@ export function seedClinicalDepartmentDoctors(db) {
     let docProf = db.get('SELECT id FROM doctor_profiles WHERE user_id = ?', [userRow.id]);
     if (!docProf) {
       const dpInfo = db.run(
-        `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, availability_status, is_active, registration_number, working_days, slot_minutes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 4.9, 'Available', 1, ?, ?, ?)`,
+        `INSERT INTO doctor_profiles (user_id, doctor_code, specialty_id, department_id, branch_id, qualification, experience_years, consultation_fee, bio, rating, availability_status, is_active, registration_number, working_days, slot_minutes, schedule_configured)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 4.9, 'Available', 1, ?, ?, ?, 1)`,
         [userRow.id, `DR-${d.code.split('-')[1]}`, specialtyId, deptId, branchId, d.degrees, d.experience, d.fee, `${d.expertise}. Board-certified doctor.`, d.regNum, d.workingDays, d.slotMinutes]
       );
       docProf = { id: dpInfo.lastInsertRowid };
     } else {
       db.run(
-        `UPDATE doctor_profiles SET specialty_id = ?, department_id = ?, branch_id = ?, qualification = ?, experience_years = ?, consultation_fee = ?, registration_number = ?, working_days = ?, slot_minutes = ?, is_active = 1 WHERE id = ?`,
+        `UPDATE doctor_profiles SET specialty_id = ?, department_id = ?, branch_id = ?, qualification = ?, experience_years = ?, consultation_fee = ?, registration_number = ?, working_days = ?, slot_minutes = ?, is_active = 1, schedule_configured = 1 WHERE id = ?`,
         [specialtyId, deptId, branchId, d.degrees, d.experience, d.fee, d.regNum, d.workingDays, d.slotMinutes, docProf.id]
       );
     }

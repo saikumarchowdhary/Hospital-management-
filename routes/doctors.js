@@ -2,16 +2,132 @@ import express from 'express';
 import { AppError, asyncHandler } from '../middleware/errors.js';
 import { requireRole } from '../middleware/roles.js';
 
-export function createDoctorsRouter(db, authenticate) {
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function saveDoctorSchedulesAndSlots(db, broker, doctorId, payload) {
+  const doc = db.get('SELECT id, branch_id, working_days, slot_minutes FROM doctor_profiles WHERE id = ?', [doctorId]);
+  if (!doc) throw new AppError(404, 'Doctor profile not found.');
+
+  const {
+    schedules = [],
+    working_days = null,
+    start_time = '09:00',
+    end_time = '17:00',
+    slot_minutes = 30,
+    break_start = null,
+    break_end = null,
+    consultation_fee,
+    availability_status
+  } = payload;
+
+  const normalizedSchedules = [];
+  if (Array.isArray(schedules) && schedules.length > 0) {
+    for (const sc of schedules) {
+      normalizedSchedules.push({
+        day_of_week: Number(sc.day_of_week),
+        start_time: String(sc.start_time || '09:00'),
+        end_time: String(sc.end_time || '17:00'),
+        slot_minutes: Math.max(10, Number(sc.slot_minutes || slot_minutes || 30)),
+        break_start: sc.break_start || break_start || null,
+        break_end: sc.break_end || break_end || null
+      });
+    }
+  } else if (Array.isArray(working_days) && working_days.length > 0) {
+    for (const d of working_days) {
+      const dow = typeof d === 'number' ? d : DAY_NAMES.indexOf(String(d).trim());
+      if (dow >= 0 && dow <= 7) {
+        normalizedSchedules.push({
+          day_of_week: dow,
+          start_time: String(start_time || '09:00'),
+          end_time: String(end_time || '17:00'),
+          slot_minutes: Math.max(10, Number(slot_minutes || 30)),
+          break_start: break_start || null,
+          break_end: break_end || null
+        });
+      }
+    }
+  }
+
+  db.transaction(() => {
+    if (consultation_fee !== undefined && consultation_fee !== null && consultation_fee !== '') {
+      db.run("UPDATE doctor_profiles SET consultation_fee = ?, updated_at = datetime('now') WHERE id = ?", [Number(consultation_fee), doctorId]);
+    }
+    if (availability_status) {
+      const allowed = ['Available', 'Busy', 'On Leave', 'In Surgery'];
+      if (!allowed.includes(availability_status)) throw new AppError(400, 'Invalid availability status.');
+      db.run("UPDATE doctor_profiles SET availability_status = ?, updated_at = datetime('now') WHERE id = ?", [availability_status, doctorId]);
+    }
+
+    if (normalizedSchedules.length > 0) {
+      db.run('DELETE FROM doctor_schedules WHERE doctor_id = ?', [doctorId]);
+      for (const sc of normalizedSchedules) {
+        db.run(
+          `INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, slot_minutes, break_start, break_end, is_active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+          [doctorId, sc.day_of_week, sc.start_time, sc.end_time, sc.slot_minutes, sc.break_start, sc.break_end]
+        );
+      }
+
+      const dayLabels = [...new Set(normalizedSchedules.map((s) => DAY_NAMES[s.day_of_week % 7]))].join(',');
+      db.run(
+        "UPDATE doctor_profiles SET working_days = ?, slot_minutes = ?, schedule_configured = 1, updated_at = datetime('now') WHERE id = ?",
+        [dayLabels, normalizedSchedules[0].slot_minutes, doctorId]
+      );
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      db.run("DELETE FROM appointment_slots WHERE doctor_id = ? AND slot_date >= ? AND status = 'Available'", [doctorId, todayStr]);
+
+      const today = new Date();
+      for (let offset = 0; offset < 14; offset++) {
+        const dt = new Date(today.getTime() + offset * 86400000).toISOString().slice(0, 10);
+        const dow = new Date(`${dt}T00:00:00Z`).getUTCDay();
+        const matching = normalizedSchedules.filter((s) => s.day_of_week === dow || (dow === 0 && s.day_of_week === 7));
+        for (const sc of matching) {
+          const [sh, sm] = sc.start_time.split(':').map(Number);
+          const [eh, em] = sc.end_time.split(':').map(Number);
+          let cur = sh * 60 + sm;
+          const end = eh * 60 + em;
+          const bStart = sc.break_start ? (() => { const [h, m] = sc.break_start.split(':').map(Number); return h * 60 + m; })() : null;
+          const bEnd = sc.break_end ? (() => { const [h, m] = sc.break_end.split(':').map(Number); return h * 60 + m; })() : null;
+          while (cur + sc.slot_minutes <= end) {
+            const inBreak = bStart !== null && bEnd !== null && cur >= bStart && cur < bEnd;
+            if (!inBreak) {
+              const hh = String(Math.floor(cur / 60)).padStart(2, '0');
+              const mm = String(cur % 60).padStart(2, '0');
+              db.run(
+                'INSERT OR IGNORE INTO appointment_slots (doctor_id, branch_id, slot_date, slot_time, status) VALUES (?, ?, ?, ?, ?)',
+                [doctorId, doc.branch_id, dt, `${hh}:${mm}`, 'Available']
+              );
+            }
+            cur += sc.slot_minutes;
+          }
+        }
+      }
+    }
+  })();
+
+  if (broker) {
+    broker.publish('doctor:updated', { doctorId }, { roles: ['admin', 'receptionist', 'patient', 'doctor'] });
+  }
+}
+
+export function createDoctorsRouter(db, authenticate, broker = null) {
   const router = express.Router();
   router.use(authenticate);
+  router.use((req, _res, next) => {
+    if (req.user.role === 'candidate') {
+      return next(new AppError(403, 'Candidate accounts only have access to Careers & Applications.'));
+    }
+    return next();
+  });
 
   router.get('/meta/filters', asyncHandler(async (_req, res) => {
     const branches = db.all('SELECT * FROM branches WHERE is_active = 1');
     const departments = db.all('SELECT * FROM departments WHERE is_active = 1 ORDER BY name');
     const specialties = db.all(
       `SELECT s.*, d.name as department_name,
-              (SELECT COUNT(*) FROM doctor_profiles dp WHERE dp.specialty_id = s.id AND dp.is_active = 1) as doctor_count
+              (SELECT COUNT(*) FROM doctor_profiles dp JOIN users u ON u.id = dp.user_id
+               WHERE dp.specialty_id = s.id AND dp.is_active = 1 AND dp.schedule_configured = 1 AND u.is_active = 1 AND u.account_status = 'Active') as doctor_count
        FROM specialties s LEFT JOIN departments d ON d.id = s.department_id ORDER BY s.id ASC`
     );
     res.json({ branches, departments, specialties });
@@ -19,7 +135,7 @@ export function createDoctorsRouter(db, authenticate) {
 
   router.get('/', asyncHandler(async (req, res) => {
     const { q = '', specialtyId, departmentId, branchId, maxFee, dayOfWeek } = req.query;
-    const where = ['dp.is_active = 1'];
+    const where = ['dp.is_active = 1', 'dp.schedule_configured = 1', 'u.is_active = 1', "u.account_status = 'Active'"];
     const params = [];
 
     if (q.trim()) {
@@ -50,7 +166,7 @@ export function createDoctorsRouter(db, authenticate) {
     );
 
     for (const doc of doctors) {
-      doc.schedules = db.all('SELECT day_of_week, start_time, end_time FROM doctor_schedules WHERE doctor_id = ? AND is_active = 1', [doc.id]);
+      doc.schedules = db.all('SELECT day_of_week, start_time, end_time, slot_minutes, break_start, break_end FROM doctor_schedules WHERE doctor_id = ? AND is_active = 1 ORDER BY day_of_week', [doc.id]);
     }
     res.json({ doctors });
   }));
@@ -108,6 +224,16 @@ export function createDoctorsRouter(db, authenticate) {
     res.json({ doctor, patients, followUps, radiologyOrders });
   }));
 
+  router.put('/me/schedule-setup', requireRole('doctor'), asyncHandler(async (req, res) => {
+    if (!req.user.doctor_id) throw new AppError(403, 'Doctor profile not linked.');
+    const hasDays = (Array.isArray(req.body.schedules) && req.body.schedules.length > 0) ||
+      (Array.isArray(req.body.working_days) && req.body.working_days.length > 0);
+    if (!hasDays) throw new AppError(400, 'Please select at least one working day for your schedule.');
+    saveDoctorSchedulesAndSlots(db, broker, req.user.doctor_id, req.body);
+    const updated = db.get('SELECT * FROM doctor_profiles WHERE id = ?', [req.user.doctor_id]);
+    res.json({ ok: true, message: 'Doctor schedule setup completed. Your profile is now live in Find a Doctor.', doctor: updated });
+  }));
+
   router.get('/:id', asyncHandler(async (req, res) => {
     const doc = db.get(
       `SELECT dp.*, u.full_name, u.email, u.phone,
@@ -145,10 +271,31 @@ export function createDoctorsRouter(db, authenticate) {
     );
 
     if (!slots.length) {
-      const defaults = ['09:00', '09:30', '10:00', '10:30', '11:00', '14:00', '14:30', '15:00'];
-      for (const t of defaults) {
-        db.run('INSERT OR IGNORE INTO appointment_slots (doctor_id, branch_id, slot_date, slot_time, status) VALUES (?, ?, ?, ?, ?)',
-          [doctorId, doc.branch_id, date, t, 'Available']);
+      const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
+      const schedules = db.all(
+        `SELECT * FROM doctor_schedules WHERE doctor_id = ? AND is_active = 1 AND (day_of_week = ? OR (? = 0 AND day_of_week = 7)) ORDER BY start_time ASC`,
+        [doctorId, dow, dow]
+      );
+      for (const sc of schedules) {
+        const [sh, sm] = String(sc.start_time || '09:00').split(':').map(Number);
+        const [eh, em] = String(sc.end_time || '17:00').split(':').map(Number);
+        const step = Math.max(10, Number(sc.slot_minutes || 30));
+        let cur = sh * 60 + sm;
+        const end = eh * 60 + em;
+        const bStart = sc.break_start ? (() => { const [h, m] = sc.break_start.split(':').map(Number); return h * 60 + m; })() : null;
+        const bEnd = sc.break_end ? (() => { const [h, m] = sc.break_end.split(':').map(Number); return h * 60 + m; })() : null;
+        while (cur + step <= end) {
+          const inBreak = bStart !== null && bEnd !== null && cur >= bStart && cur < bEnd;
+          if (!inBreak) {
+            const hh = String(Math.floor(cur / 60)).padStart(2, '0');
+            const mm = String(cur % 60).padStart(2, '0');
+            db.run(
+              'INSERT OR IGNORE INTO appointment_slots (doctor_id, branch_id, slot_date, slot_time, status) VALUES (?, ?, ?, ?, ?)',
+              [doctorId, doc.branch_id, date, `${hh}:${mm}`, 'Available']
+            );
+          }
+          cur += step;
+        }
       }
       slots = db.all(
         `SELECT *, status as computed_status FROM appointment_slots WHERE doctor_id = ? AND slot_date = ? ORDER BY slot_time ASC`,
@@ -167,24 +314,7 @@ export function createDoctorsRouter(db, authenticate) {
     if (req.user.role === 'doctor' && req.user.doctor_id !== doctorId) {
       throw new AppError(403, 'Doctors may only update their own availability.');
     }
-    const { schedules = [], consultation_fee, availability_status } = req.body;
-    if (consultation_fee !== undefined) {
-      db.run('UPDATE doctor_profiles SET consultation_fee = ?, updated_at = datetime(\'now\') WHERE id = ?', [Number(consultation_fee), doctorId]);
-    }
-    if (availability_status) {
-      const allowed = ['Available', 'Busy', 'On Leave', 'In Surgery'];
-      if (!allowed.includes(availability_status)) throw new AppError(400, 'Invalid availability status.');
-      db.run('UPDATE doctor_profiles SET availability_status = ?, updated_at = datetime(\'now\') WHERE id = ?', [availability_status, doctorId]);
-    }
-    if (Array.isArray(schedules) && schedules.length) {
-      db.run('DELETE FROM doctor_schedules WHERE doctor_id = ?', [doctorId]);
-      for (const sc of schedules) {
-        db.run(
-          'INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, slot_minutes) VALUES (?, ?, ?, ?, ?)',
-          [doctorId, Number(sc.day_of_week), sc.start_time, sc.end_time, Number(sc.slot_minutes || 30)]
-        );
-      }
-    }
+    saveDoctorSchedulesAndSlots(db, broker, doctorId, req.body);
     res.json({ message: 'Doctor schedule and availability updated.' });
   }));
 

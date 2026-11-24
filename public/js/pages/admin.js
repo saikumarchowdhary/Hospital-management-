@@ -15,7 +15,7 @@ export async function renderAdminDashboard(container) {
       const activeAttention = attention.filter((item) => !snoozedIds.has(item.id));
       container.innerHTML = `
         <div class="card-header">
-          <div><h1>CareLine Hospital Operations Dashboard</h1><p class="text-sm muted">Live database metrics across clinical, diagnostic, bed, pharmacy, and revenue units (CareLine Sample Demo dataset).</p></div>
+          <div><h1>CareLine Hospital Operations Dashboard</h1><p class="text-sm muted">Live database metrics across clinical, diagnostic, bed, pharmacy, and revenue units.</p></div>
           <a href="#admin/members" class="btn btn-primary btn-sm">All Members Management</a>
         </div>
 

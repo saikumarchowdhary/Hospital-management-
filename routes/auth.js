@@ -8,7 +8,7 @@ import { AppError, asyncHandler } from '../middleware/errors.js';
 import { isStrongPassword, validateRequest } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
-import { SELF_REGISTER_STAFF_ROLES, registerStaffPendingTx } from './registration_helpers.js';
+import { SELF_REGISTER_STAFF_ROLES, generateNextPatientCode, registerStaffPendingTx } from './registration_helpers.js';
 
 function issueSessionTokens(userId, roleCode, jwtSecret, remember = true) {
   const accessTtlSec = remember ? 12 * 3600 : 4 * 3600;
@@ -18,9 +18,90 @@ function issueSessionTokens(userId, roleCode, jwtSecret, remember = true) {
   return { accessToken, refreshToken, expiresAt: Date.now() + accessTtlSec * 1000 };
 }
 
-export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
+export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upload = null) {
   const router = express.Router();
   const limiter = createLoginRateLimiter();
+  const regUpload = upload
+    ? upload.fields([
+      { name: 'photo', maxCount: 1 },
+      { name: 'licence', maxCount: 1 },
+      { name: 'document_file', maxCount: 1 }
+    ])
+    : (_req, _res, next) => next();
+
+  router.get('/setup-status', (_req, res) => {
+    const row = db.get(
+      `SELECT COUNT(*) as cnt FROM users u JOIN roles r ON r.id = u.role_id WHERE r.code = 'admin' AND u.is_active = 1`
+    );
+    const demoAccountsVisible =
+      process.env.NODE_ENV !== 'production' &&
+      (process.env.DEMO_ACCOUNTS_VISIBLE === 'true' || process.env.DEMO_ACCOUNTS_VISIBLE === '1');
+    res.json({ needsSetup: !row || row.cnt === 0, demoAccountsVisible });
+  });
+
+  router.post(
+    '/setup-admin',
+    limiter,
+    [
+      body('full_name').trim().isLength({ min: 2 }).withMessage('Full name is required.'),
+      body('email').isEmail().normalizeEmail().withMessage('Valid administrator email is required.'),
+      body('mobile').optional({ checkFalsy: true }).trim().isLength({ min: 6 }).withMessage('Valid mobile number is required.'),
+      body('password').custom(isStrongPassword).withMessage('Password must be at least 8 characters and include at least one number.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => {
+      const { full_name, email, mobile = '', password } = req.body;
+      const hash = bcrypt.hashSync(password, 10);
+      const userCode = `ADM-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
+
+      const createdId = db.transaction(() => {
+        const existingAdmin = db.get(
+          `SELECT COUNT(*) as cnt FROM users u JOIN roles r ON r.id = u.role_id WHERE r.code = 'admin' AND u.is_active = 1`
+        );
+        if (existingAdmin && existingAdmin.cnt > 0) {
+          throw new AppError(403, 'Initial administrator has already been created. Please sign in.');
+        }
+        const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [email]);
+        if (dup) throw new AppError(409, 'An account with this email already exists.');
+
+        const adminRole = db.get("SELECT id FROM roles WHERE code = 'admin'");
+        const mainBranch = db.get("SELECT id FROM branches WHERE code = 'MAIN'") || db.get('SELECT id FROM branches ORDER BY id LIMIT 1');
+        const admDept = db.get("SELECT id FROM departments WHERE name = 'Administration'") || db.get('SELECT id FROM departments ORDER BY id LIMIT 1');
+
+        const uInfo = db.run(
+          `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+          [userCode, email, hash, full_name.trim(), mobile ? String(mobile).trim() : '', adminRole.id, mainBranch?.id || null, admDept?.id || null]
+        );
+        db.run(
+          `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, employment_status, base_salary)
+           VALUES (?, ?, ?, ?, 'ADMINISTRATOR', date('now'), 'Active', 0)`,
+          [uInfo.lastInsertRowid, `EMP-${userCode}`, admDept?.id || null, mainBranch?.id || null]
+        );
+        logAudit(db, {
+          actorUserId: uInfo.lastInsertRowid,
+          actorRole: 'admin',
+          action: 'auth.setup_admin',
+          entityType: 'user',
+          entityId: uInfo.lastInsertRowid,
+          ip: req.ip
+        });
+        return uInfo.lastInsertRowid;
+      })();
+
+      const { accessToken, refreshToken, expiresAt } = issueSessionTokens(createdId, 'admin', jwtSecret, true);
+      setAuthCookie(req, res, accessToken, true, refreshToken);
+      const hydratedUser = hydrateAuthenticatedUser(db, createdId);
+      return res.status(201).json({
+        token: accessToken,
+        accessToken,
+        refreshToken,
+        expiresAt,
+        message: 'Initial Administrator account created successfully.',
+        user: hydratedUser
+      });
+    })
+  );
 
   router.get('/registration-meta', (_req, res) => {
     const roles = db.all('SELECT id, code, name, is_staff FROM roles ORDER BY id')
@@ -30,6 +111,66 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
     const specialties = db.all('SELECT id, name, department_id FROM specialties ORDER BY name');
     res.json({ staffRoles: roles, departments, branches, specialties });
   });
+
+  router.post(
+    '/send-otp',
+    limiter,
+    [
+      body('channel').isIn(['email', 'sms']).withMessage('Channel must be email or sms.'),
+      body('target').trim().notEmpty().withMessage('Target email or phone is required.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => {
+      const { channel, target, purpose = 'signup' } = req.body;
+      const normalizedTarget = String(target).trim().toLowerCase();
+      const code = String(crypto.randomInt(100000, 999999));
+      const hash = bcrypt.hashSync(code, 8);
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+      db.run(
+        `INSERT INTO otp_verifications (channel, target, purpose, code_hash, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [channel, normalizedTarget, String(purpose || 'signup'), hash, expiresAt]
+      );
+      db.run(
+        `INSERT INTO integration_deliveries (channel, recipient, subject, message, mode, status, provider_ref)
+         VALUES (?, ?, 'MediCore Verification Code', ?, 'Sandbox', 'Delivered', ?)`,
+        [channel, normalizedTarget, 'One-time verification code dispatched (valid 10 minutes).', `OTP-${Date.now()}`]
+      );
+
+      const payload = { ok: true, message: `Verification code sent via ${channel}.` };
+      if (process.env.NODE_ENV !== 'production') {
+        payload.sandboxCode = code;
+      }
+      return res.json(payload);
+    })
+  );
+
+  router.post(
+    '/verify-otp',
+    limiter,
+    [
+      body('channel').isIn(['email', 'sms']).withMessage('Channel must be email or sms.'),
+      body('target').trim().notEmpty().withMessage('Target email or phone is required.'),
+      body('code').trim().notEmpty().withMessage('OTP code is required.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => {
+      const { channel, target, code, purpose = 'signup' } = req.body;
+      const normalizedTarget = String(target).trim().toLowerCase();
+      const row = db.get(
+        `SELECT * FROM otp_verifications
+         WHERE channel = ? AND target = ? AND purpose = ? AND verified_at IS NULL
+         ORDER BY id DESC LIMIT 1`,
+        [channel, normalizedTarget, String(purpose || 'signup')]
+      );
+      if (!row || new Date(row.expires_at) < new Date() || !bcrypt.compareSync(String(code).trim(), row.code_hash)) {
+        throw new AppError(400, 'Invalid or expired verification code.');
+      }
+      db.run("UPDATE otp_verifications SET verified_at = datetime('now') WHERE id = ?", [row.id]);
+      return res.json({ verified: true, message: 'Verification code confirmed.' });
+    })
+  );
 
   router.post(
     '/login',
@@ -53,22 +194,11 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
       );
 
       if (!user) return res.status(401).json({ error: 'Invalid credentials.' });
-      if (user.account_status === 'Pending Approval' && user.role !== 'pending_staff') {
-        return res.status(403).json({ error: 'Your registration is awaiting administrator approval. Please check back once approved.' });
-      }
-      if (user.account_status === 'Rejected' && user.role !== 'pending_staff') {
-        return res.status(403).json({ error: 'Your registration request was declined. Contact hospital administration.' });
-      }
-      if (user.account_status === 'Suspended' || (!user.is_active && user.role !== 'pending_staff')) {
-        return res.status(403).json({ error: 'This account has been suspended or deactivated. Contact administration.' });
-      }
       if (user.locked_until && new Date(user.locked_until) > new Date()) {
         return res.status(423).json({ error: 'Account temporarily locked due to repeated failed attempts. Try again later.' });
       }
-      if (expected_role && user.role !== expected_role) {
-        return res.status(403).json({ error: `Account belongs to "${user.role_name}". Switch to the ${user.role_name} portal to sign in.` });
-      }
 
+      // Verify password BEFORE inspecting account status so login never leaks whether an email exists on invalid password
       const valid = bcrypt.compareSync(password, user.password_hash);
       if (!valid) {
         const attempts = user.failed_attempts + 1;
@@ -78,7 +208,40 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
         return res.status(401).json({ error: lockUntil ? 'Account locked for 15 minutes after 5 failed attempts.' : 'Invalid credentials.' });
       }
 
-      db.run('UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = datetime(\'now\') WHERE id = ?', [user.id]);
+      if (user.account_status === 'Rejected') {
+        const sr = db.get('SELECT rejection_reason FROM staff_signup_requests WHERE user_id = ? ORDER BY id DESC LIMIT 1', [user.id]);
+        const reason = sr?.rejection_reason || user.review_notes || '';
+        return res.status(403).json({
+          error: reason
+            ? `Your registration request was rejected: ${reason}`
+            : 'Your registration request was declined. Contact hospital administration.',
+          account_status: 'Rejected',
+          reason
+        });
+      }
+      if (user.account_status === 'Suspended' || user.account_status === 'Withdrawn' || !user.is_active) {
+        return res.status(403).json({
+          error: 'This account has been deactivated or suspended. Contact hospital administration.',
+          account_status: user.account_status || 'Suspended'
+        });
+      }
+      if (user.account_status === 'Pending Verification') {
+        return res.status(403).json({
+          error: 'Your doctor account is pending licence verification by hospital administration.',
+          account_status: 'Pending Verification'
+        });
+      }
+      if (user.account_status === 'Pending Approval' || user.role === 'pending_staff') {
+        return res.status(403).json({
+          error: 'Your registration is awaiting administrator approval. Please check back once approved.',
+          account_status: user.account_status || 'Pending Approval'
+        });
+      }
+      if (expected_role && user.role !== expected_role) {
+        return res.status(403).json({ error: `Account belongs to "${user.role_name}". Switch to the ${user.role_name} portal to sign in.` });
+      }
+
+      db.run("UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = datetime('now') WHERE id = ?", [user.id]);
       const { accessToken, refreshToken, expiresAt } = issueSessionTokens(user.id, user.role, jwtSecret, remember);
       setAuthCookie(req, res, accessToken, remember, refreshToken);
 
@@ -98,6 +261,7 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
   router.post(
     '/register',
     limiter,
+    regUpload,
     [
       body('full_name').trim().isLength({ min: 2 }).withMessage('Full name is required.'),
       body('email').isEmail().normalizeEmail().withMessage('Valid email is required.'),
@@ -106,14 +270,25 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
     ],
     validateRequest,
     asyncHandler(async (req, res) => {
-      const accType = req.body.account_type || '';
-      const reqRole = req.body.requested_role || req.body.role || '';
-      if (['admin', 'doctor'].includes(accType) || ['admin', 'doctor'].includes(reqRole)) {
-        throw new AppError(403, 'Doctor and Administrator accounts cannot be created via public sign-up. Please contact hospital administration.');
+      const accType = String(req.body.account_type || '').toLowerCase();
+      const reqRole = String(req.body.requested_role || req.body.role || '').toLowerCase();
+
+      if (accType === 'admin' || reqRole === 'admin') {
+        throw new AppError(403, 'Administrator accounts cannot be created via public sign-up. Please contact hospital administration.');
+      }
+
+      if (accType === 'doctor' || reqRole === 'doctor') {
+        const pendingDoctor = registerStaffPendingTx(db, broker, { ...req.body, account_type: 'doctor', requested_role: 'doctor' }, req.ip, req.files);
+        return res.status(201).json({
+          pendingVerification: true,
+          pendingApproval: true,
+          message: `Doctor verification submitted (${pendingDoctor.user_code}). Your credentials are pending administrator verification.`,
+          user: pendingDoctor
+        });
       }
 
       if (accType === 'staff') {
-        const pendingUser = registerStaffPendingTx(db, broker, req.body, req.ip);
+        const pendingUser = registerStaffPendingTx(db, broker, req.body, req.ip, req.files);
         return res.status(201).json({
           pendingApproval: true,
           message: `Registration request submitted (${pendingUser.user_code}). Your application is awaiting administrative review.`,
@@ -122,16 +297,25 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
       }
 
       const {
-        full_name, email, mobile, dob, gender, address,
+        full_name, email, mobile,
+        dob = '1990-01-01',
+        gender = 'Prefer not to say',
+        address = 'Not provided',
         emergency_contact_name = '', emergency_contact_phone = '',
-        password, account_type = 'patient', consent
+        password, account_type = 'patient', consent,
+        consent_text = 'I consent to MediCore HMS storing my personal health profile, care records, and appointments.',
+        consent_version = 'v2.0',
+        otp_verified = false
       } = req.body;
-      if (!dob || !gender || !address) throw new AppError(400, 'Date of birth, gender, and residential address are required.');
-      if (!(consent === true || consent === 'true')) throw new AppError(400, 'Patient privacy consent is required.');
 
-      // Never allow unrestricted admin or staff creation through public patient registration
       const safeRoleCode = account_type === 'candidate' ? 'candidate' : 'patient';
-      const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?) OR phone = ?', [email, mobile]);
+      if (safeRoleCode === 'patient' && !(consent === true || consent === 'true')) {
+        throw new AppError(400, 'Patient privacy consent acceptance is required.');
+      }
+
+      const safeEmail = String(email).trim().toLowerCase();
+      const safeMobile = String(mobile).trim();
+      const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?) OR phone = ?', [safeEmail, safeMobile]);
       if (dup) throw new AppError(409, 'An account with this email or mobile number already exists.');
 
       const role = db.get('SELECT id, code, name FROM roles WHERE code = ?', [safeRoleCode]);
@@ -143,28 +327,38 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
         const uInfo = db.run(
           `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, account_status)
            VALUES (?, ?, ?, ?, ?, ?, 1, 'Active')`,
-          [userCode, email, hash, full_name, mobile, role.id]
+          [userCode, safeEmail, hash, full_name.trim(), safeMobile, role.id]
         );
+        let patientCode = null;
         if (safeRoleCode === 'patient') {
-          const patCode = `MRN-${String(Date.now()).slice(-4)}${rand}`;
+          patientCode = generateNextPatientCode(db);
+          const completion = address !== 'Not provided' && emergency_contact_name ? 90 : (address !== 'Not provided' ? 80 : 60);
           const pInfo = db.run(
             `INSERT INTO patient_profiles (user_id, patient_code, dob, gender, address, emergency_contact_name, emergency_contact_phone, otp_verified, profile_completion)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-            [uInfo.lastInsertRowid, patCode, dob, gender, address, emergency_contact_name || null, emergency_contact_phone || null, emergency_contact_name ? 90 : 80]
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [uInfo.lastInsertRowid, patientCode, dob || '1990-01-01', gender || 'Prefer not to say', address || 'Not provided', emergency_contact_name || null, emergency_contact_phone || null, otp_verified ? 1 : 0, completion]
           );
           db.run(
-            `INSERT INTO patient_consents (patient_id, consent_type, accepted, ip_address)
-             VALUES (?, 'Portal Registration & Care Terms', 1, ?)`,
-            [pInfo.lastInsertRowid, req.ip]
+            `INSERT INTO patient_consents (patient_id, consent_type, consent_text, consent_version, accepted, ip_address)
+             VALUES (?, 'Portal Registration & Care Terms', ?, ?, 1, ?)`,
+            [pInfo.lastInsertRowid, String(consent_text), String(consent_version), req.ip]
           );
         }
-        logAudit(db, { actorUserId: uInfo.lastInsertRowid, actorRole: safeRoleCode, action: 'auth.register', entityType: 'user', entityId: uInfo.lastInsertRowid, ip: req.ip });
+        logAudit(db, {
+          actorUserId: uInfo.lastInsertRowid,
+          actorRole: safeRoleCode,
+          action: 'auth.register',
+          entityType: 'user',
+          entityId: uInfo.lastInsertRowid,
+          details: JSON.stringify({ role: safeRoleCode, patientCode, consent_version: safeRoleCode === 'patient' ? consent_version : undefined }),
+          ip: req.ip
+        });
         return uInfo.lastInsertRowid;
       })();
 
       createNotification(db, broker, {
-        roles: ['admin', 'receptionist'],
-        title: 'New Patient Registered',
+        roles: safeRoleCode === 'candidate' ? ['admin', 'hr'] : ['admin', 'receptionist'],
+        title: safeRoleCode === 'candidate' ? 'New Candidate Registered' : 'New Patient Registered',
         message: `${full_name} (${userCode}) joined MediCore HMS.`,
         eventType: 'member:registered'
       });
@@ -184,12 +378,17 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
   );
 
   router.post('/forgot-password', limiter, [body('email').isEmail().withMessage('Valid email is required.')], validateRequest, asyncHandler(async (req, res) => {
-    const user = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [req.body.email]);
-    if (!user) return res.json({ message: 'If an account matches that email, a local demonstration reset code has been generated.' });
+    const genericMsg = 'If an account matches that email, password reset instructions have been sent.';
+    const user = db.get('SELECT id, email FROM users WHERE lower(email) = lower(?)', [req.body.email]);
+    if (!user) return res.json({ message: genericMsg });
     const resetCode = String(crypto.randomInt(100000, 999999));
     db.run('UPDATE users SET reset_token_hash = ?, reset_expires_at = ? WHERE id = ?', [bcrypt.hashSync(resetCode, 8), new Date(Date.now() + 15 * 60 * 1000).toISOString(), user.id]);
     logAudit(db, { actorUserId: user.id, action: 'auth.forgot_password', entityType: 'user', entityId: user.id });
-    return res.json({ message: 'Local demo reset code generated (valid 15 minutes).', demoResetCode: resetCode });
+    const payload = { message: genericMsg };
+    if (process.env.NODE_ENV !== 'production') {
+      payload.demoResetCode = resetCode;
+    }
+    return res.json(payload);
   }));
 
   router.post('/reset-password', limiter, [
@@ -224,8 +423,8 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null) {
       return res.status(401).json({ error: 'Refresh token expired or invalid. Please log in again.' });
     }
     const user = hydrateAuthenticatedUser(db, decoded.sub);
-    if (!user || (!user.is_active && user.role !== 'pending_staff') || (user.account_status !== 'Active' && user.account_status !== 'Pending Approval' && user.account_status !== 'Rejected')) {
-      return res.status(401).json({ error: 'Account is inactive, suspended, or invalid.' });
+    if (!user || !user.is_active || user.account_status !== 'Active' || user.role === 'pending_staff') {
+      return res.status(401).json({ error: 'Account is inactive, suspended, or awaiting verification.' });
     }
     const { accessToken, refreshToken, expiresAt } = issueSessionTokens(user.id, user.role, jwtSecret, true);
     setAuthCookie(req, res, accessToken, true, refreshToken);

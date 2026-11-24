@@ -46,13 +46,14 @@ test('Registration & Admin All Members: patient emergency contact, pending staff
 
     // Doctor & Nurse pending staff registration requests
     const docReg = await ctx.createClient().post('/api/auth/register', {
-      account_type: 'staff', requested_role: 'doctor', full_name: 'Dr. Nina Shah',
+      account_type: 'doctor', requested_role: 'doctor', full_name: 'Dr. Nina Shah',
       email: 'nina.shah@demo.com', mobile: '+1-555-9003', password: 'Password123',
+      medical_registration_number: 'REG-NINA-9003', medical_council: 'Metro Medical Council',
       department_id: meta.data.departments[0].id, specialty_id: meta.data.specialties[0].id,
       qualification: 'MD, FACC', experience_years: 11, availability_status: 'Available'
     });
     assert.equal(docReg.status, 201);
-    assert.equal(docReg.data.user.account_status, 'Pending Approval');
+    assert.equal(docReg.data.user.account_status, 'Pending Verification');
 
     // Duplicate email rejected (409)
     const dupStaff = await ctx.createClient().post('/api/auth/register', {
@@ -69,7 +70,7 @@ test('Registration & Admin All Members: patient emergency contact, pending staff
     const adm = ctx.createClient();
     await adm.login('admin@demo.com', 'Admin@123');
 
-    const pendingList = await adm.get('/api/admin/members?status=Pending+Approval');
+    const pendingList = await adm.get('/api/admin/members?status=Pending+Verification');
     assert.equal(pendingList.status, 200);
     const pendingDoc = pendingList.data.members.find((m) => m.email === 'nina.shah@demo.com');
     assert.ok(pendingDoc);

@@ -23,7 +23,49 @@ export async function renderDoctorPortal(container, user) {
     let tab = 'today';
 
     function draw() {
+      const needsScheduleWizard = Boolean(doc && !doc.schedule_configured);
       container.innerHTML = `
+        ${needsScheduleWizard ? `
+          <div class="card" style="border:2px solid var(--primary);background:var(--surface);margin-bottom:16px" id="doc-setup-wizard-card">
+            <div class="card-header" style="margin-bottom:10px">
+              <div>
+                <span class="status status-warning" style="margin-bottom:6px;display:inline-flex">Action Required · First-Login Setup</span>
+                <h2 style="margin:0">Configure Your Working Schedule to Go Live</h2>
+                <p class="text-sm muted" style="margin-top:4px">Patients cannot book appointments with you in Find a Doctor until you set your working days, hours, breaks, and slot duration.</p>
+              </div>
+            </div>
+            <form id="doc-wizard-form" class="form-grid">
+              <div class="field full">
+                <label>Working Days</label>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;padding:6px 0">
+                  ${[['Mon',1],['Tue',2],['Wed',3],['Thu',4],['Fri',5],['Sat',6],['Sun',0]].map(([lbl, val]) => `
+                    <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+                      <input type="checkbox" name="wiz_days" value="${val}" ${[1,2,3,4,5].includes(val) ? 'checked' : ''} /> ${lbl}
+                    </label>
+                  `).join('')}
+                </div>
+              </div>
+              <div class="field"><label for="wiz-start">Shift Start</label><input id="wiz-start" name="start_time" type="time" value="09:00" required /></div>
+              <div class="field"><label for="wiz-end">Shift End</label><input id="wiz-end" name="end_time" type="time" value="17:00" required /></div>
+              <div class="field"><label for="wiz-slot">Slot Length</label>
+                <select id="wiz-slot" name="slot_minutes">
+                  <option value="15">15 minutes</option>
+                  <option value="20">20 minutes</option>
+                  <option value="30" selected>30 minutes</option>
+                  <option value="45">45 minutes</option>
+                  <option value="60">60 minutes</option>
+                </select>
+              </div>
+              <div class="field"><label for="wiz-fee">Consultation Fee ($)</label><input id="wiz-fee" name="consultation_fee" type="number" min="10" value="${Number(doc.consultation_fee || 100)}" required /></div>
+              <div class="field"><label for="wiz-bstart">Break Start (Optional)</label><input id="wiz-bstart" name="break_start" type="time" value="13:00" /></div>
+              <div class="field"><label for="wiz-bend">Break End (Optional)</label><input id="wiz-bend" name="break_end" type="time" value="14:00" /></div>
+              <div class="field full">
+                <button type="submit" class="btn btn-primary" id="wiz-submit-btn">Save Schedule & Publish Profile</button>
+              </div>
+            </form>
+          </div>
+        ` : ''}
+
         ${doc ? `
           <div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px">
             <div>
@@ -32,6 +74,7 @@ export async function renderDoctorPortal(container, user) {
                 <span>·</span><span>${esc(doc.department_name)}</span>
                 <span>·</span><span>${esc(doc.branch_name)}</span>
                 <span>·</span>${statusBadge(doc.availability_status || 'Available')}
+                ${doc.schedule_configured ? '<span>·</span><span class="status status-success">Listed in Find a Doctor</span>' : ''}
               </div>
               <h1 style="margin-top:4px">${esc(doc.full_name)} <span class="text-sm muted">(${esc(doc.qualification)})</span></h1>
               <div class="text-xs muted tabular">${doc.experience_years} yrs experience · Consultation Fee ${fmtMoney(doc.consultation_fee)}</div>
@@ -124,6 +167,37 @@ export async function renderDoctorPortal(container, user) {
       }
 
       container.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => { tab = b.dataset.t; draw(); }; });
+      const wizForm = container.querySelector('#doc-wizard-form');
+      if (wizForm) {
+        wizForm.onsubmit = async (e) => {
+          e.preventDefault();
+          const fd = new FormData(wizForm);
+          const selectedDays = Array.from(wizForm.querySelectorAll('input[name="wiz_days"]:checked')).map((c) => Number(c.value));
+          if (!selectedDays.length) {
+            toast('Select Working Days', 'Choose at least one working day.', 'danger');
+            return;
+          }
+          const btn = wizForm.querySelector('#wiz-submit-btn');
+          btn.disabled = true;
+          try {
+            await api.put('/api/doctors/me/schedule-setup', {
+              working_days: selectedDays,
+              start_time: fd.get('start_time'),
+              end_time: fd.get('end_time'),
+              slot_minutes: Number(fd.get('slot_minutes') || 30),
+              break_start: fd.get('break_start') || null,
+              break_end: fd.get('break_end') || null,
+              consultation_fee: Number(fd.get('consultation_fee') || 100)
+            });
+            toast('Schedule Published', 'Your profile is now live in Find a Doctor.', 'success');
+            await renderDoctorPortal(container, user);
+          } catch (err) {
+            toast('Setup Failed', err.message, 'danger');
+          } finally {
+            btn.disabled = false;
+          }
+        };
+      }
       const availBtn = container.querySelector('#doc-avail-btn');
       if (availBtn && doc) availBtn.onclick = () => openAvailabilityModal(doc, () => renderDoctorPortal(container, user));
       container.querySelectorAll('.apt-det-btn').forEach((b) => {

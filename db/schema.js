@@ -156,7 +156,7 @@ export function initSchemaPart1(db) {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       full_name TEXT NOT NULL,
       email TEXT NOT NULL,
-      mobile TEXT NOT NULL,
+      phone TEXT NOT NULL DEFAULT '',
       requested_role TEXT NOT NULL,
       branch_id INTEGER REFERENCES branches(id),
       department_id INTEGER REFERENCES departments(id),
