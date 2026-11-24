@@ -183,7 +183,7 @@ export function seedReferenceData(db) {
     for (const bg of ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']) {
       db.run('INSERT OR IGNORE INTO blood_groups (group_name) VALUES (?)', [bg]);
     }
-    for (const c of ['Cardiovascular', 'Antibiotics', 'Analgesics', 'Endocrine']) {
+    for (const c of ['Cardiovascular', 'Antibiotics', 'Analgesics', 'Painkillers', 'Emergency', 'Endocrine']) {
       db.run('INSERT OR IGNORE INTO medicine_categories (name) VALUES (?)', [c]);
     }
     for (const c of ['Hematology', 'Biochemistry', 'Cardiac Markers']) {

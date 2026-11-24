@@ -11,16 +11,18 @@ export function seedOperationsData(db, deptMap, mainBranchId) {
   const doc1 = db.get('SELECT id FROM doctor_profiles WHERE doctor_code = ?', ['DR-2001']);
 
   // Pharmacy Categories, Medicines, Batches
-  const medCats = ['Cardiovascular', 'Antibiotics', 'Analgesics', 'Endocrine'];
+  const medCats = ['Cardiovascular', 'Antibiotics', 'Analgesics', 'Painkillers', 'Emergency', 'Endocrine'];
   for (const c of medCats) db.run('INSERT OR IGNORE INTO medicine_categories (name) VALUES (?)', [c]);
   const catRows = Object.fromEntries(db.all('SELECT id, name FROM medicine_categories').map((r) => [r.name, r.id]));
 
   const meds = [
     ['MED-001', 'Amlodipine 5mg', 'Amlodipine Besylate', 'Cardiovascular', 'Tablet', 1.5, 30],
     ['MED-002', 'Amoxicillin 500mg', 'Amoxicillin Trihydrate', 'Antibiotics', 'Capsule', 2.2, 25],
-    ['MED-003', 'Paracetamol 500mg', 'Acetaminophen', 'Analgesics', 'Tablet', 0.8, 50],
+    ['MED-003', 'Paracetamol 500mg', 'Acetaminophen', 'Painkillers', 'Tablet', 0.8, 50],
     ['MED-004', 'Metformin 500mg', 'Metformin HCl', 'Endocrine', 'Tablet', 1.2, 40],
-    ['MED-005', 'Atorvastatin 20mg', 'Atorvastatin Calcium', 'Cardiovascular', 'Tablet', 2.5, 20]
+    ['MED-005', 'Atorvastatin 20mg', 'Atorvastatin Calcium', 'Cardiovascular', 'Tablet', 2.5, 20],
+    ['MED-006', 'Ibuprofen 400mg', 'Ibuprofen', 'Painkillers', 'Tablet', 1.1, 35],
+    ['MED-007', 'Epinephrine 1mg/ml', 'Adrenaline Tartrate', 'Emergency', 'Ampoule', 8.5, 15]
   ];
   for (const [sku, name, gen, cat, unit, price, reorder] of meds) {
     db.run(

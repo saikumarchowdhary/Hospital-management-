@@ -69,6 +69,7 @@ import { AuthModal } from './components/AuthModal';
 import { AdminSignupsPanel } from './components/AdminSignupsPanel';
 import { DoctorScheduleWizardModal } from './components/DoctorScheduleWizardModal';
 import { CandidateCareersPanel } from './components/CandidateCareersPanel';
+import { PharmacyInventoryPanel } from './components/PharmacyInventoryPanel';
 
 interface AuthUser {
   id: number;
@@ -80,6 +81,137 @@ interface AuthUser {
   permissions: string[];
   schedule_configured?: number | boolean;
   doctor_id?: number;
+}
+
+function AuditDiffViewer({ before, after }: { before: any; after: any }) {
+  const [diffMode, setDiffMode] = useState<'visual' | 'raw'>('visual');
+
+  const beforeObj = typeof before === 'object' && before !== null ? before : { value: before };
+  const afterObj = typeof after === 'object' && after !== null ? after : { value: after };
+
+  const allKeys = Array.from(new Set([...Object.keys(beforeObj || {}), ...Object.keys(afterObj || {})]));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <span className="text-xs font-bold text-slate-700">Side-by-Side Diff Verification</span>
+          <span className="bg-blue-100 text-blue-800 text-[10px] font-semibold px-2 py-0.5 rounded-full">
+            {allKeys.length} properties analyzed
+          </span>
+        </div>
+        <div className="bg-slate-200 p-0.5 rounded-lg flex items-center space-x-1 text-xs">
+          <button
+            onClick={() => setDiffMode('visual')}
+            className={`px-2.5 py-1 rounded-md font-semibold ${diffMode === 'visual' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'}`}
+          >
+            Visual Property Diff
+          </button>
+          <button
+            onClick={() => setDiffMode('raw')}
+            className={`px-2.5 py-1 rounded-md font-semibold ${diffMode === 'raw' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'}`}
+          >
+            Raw JSON Split
+          </button>
+        </div>
+      </div>
+
+      {diffMode === 'visual' ? (
+        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+          <div className="grid grid-cols-2 bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-600">
+            <div className="p-2.5 border-r border-slate-200 flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+              <span>Before State (Previous)</span>
+            </div>
+            <div className="p-2.5 flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>After State (Current / Result)</span>
+            </div>
+          </div>
+          <div className="divide-y divide-slate-100 text-xs font-mono">
+            {allKeys.length === 0 ? (
+              <div className="p-4 text-center text-slate-400 italic">No state changes recorded.</div>
+            ) : (
+              allKeys.map((key) => {
+                const hasBefore = Object.prototype.hasOwnProperty.call(beforeObj, key);
+                const hasAfter = Object.prototype.hasOwnProperty.call(afterObj, key);
+                const valBefore = hasBefore ? beforeObj[key] : undefined;
+                const valAfter = hasAfter ? afterObj[key] : undefined;
+                const isModified = hasBefore && hasAfter && JSON.stringify(valBefore) !== JSON.stringify(valAfter);
+                const isAdded = !hasBefore && hasAfter;
+                const isRemoved = hasBefore && !hasAfter;
+                const isUnchanged = hasBefore && hasAfter && JSON.stringify(valBefore) === JSON.stringify(valAfter);
+
+                let rowBg = 'bg-white';
+                let beforeHighlight = 'text-slate-700';
+                let afterHighlight = 'text-slate-700';
+                let statusBadge = null;
+
+                if (isModified) {
+                  rowBg = 'bg-amber-50/40';
+                  beforeHighlight = 'text-amber-900 bg-amber-100/60 font-semibold';
+                  afterHighlight = 'text-emerald-900 bg-emerald-100/60 font-semibold';
+                  statusBadge = <span className="text-[10px] bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-sans">Modified</span>;
+                } else if (isAdded) {
+                  rowBg = 'bg-emerald-50/30';
+                  beforeHighlight = 'text-slate-400 italic';
+                  afterHighlight = 'text-emerald-900 bg-emerald-100/70 font-semibold';
+                  statusBadge = <span className="text-[10px] bg-emerald-200 text-emerald-900 px-1.5 py-0.5 rounded font-sans">Added</span>;
+                } else if (isRemoved) {
+                  rowBg = 'bg-rose-50/30';
+                  beforeHighlight = 'text-rose-900 bg-rose-100/70 font-semibold';
+                  afterHighlight = 'text-slate-400 italic';
+                  statusBadge = <span className="text-[10px] bg-rose-200 text-rose-900 px-1.5 py-0.5 rounded font-sans">Removed</span>;
+                }
+
+                return (
+                  <div key={key} className={`grid grid-cols-2 items-stretch ${rowBg} hover:bg-slate-50 transition-colors`}>
+                    <div className="p-2.5 border-r border-slate-200 break-all flex flex-col justify-between">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-slate-800 font-sans">{key}</span>
+                        {statusBadge}
+                      </div>
+                      <div className={`p-1.5 rounded ${beforeHighlight}`}>
+                        {hasBefore ? (typeof valBefore === 'object' ? JSON.stringify(valBefore, null, 2) : String(valBefore)) : '(not present)'}
+                      </div>
+                    </div>
+                    <div className="p-2.5 break-all flex flex-col justify-between">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-slate-800 font-sans">{key}</span>
+                        {isUnchanged && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-sans">Unchanged</span>}
+                      </div>
+                      <div className={`p-1.5 rounded ${afterHighlight}`}>
+                        {hasAfter ? (typeof valAfter === 'object' ? JSON.stringify(valAfter, null, 2) : String(valAfter)) : '(removed)'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs font-bold text-amber-800 mb-1 flex items-center gap-1">
+              <Code className="w-3.5 h-3.5" /> Before State (Raw JSON)
+            </div>
+            <pre className="bg-slate-950 text-emerald-400 p-3 rounded-lg text-xs font-mono overflow-x-auto max-h-80">
+              {JSON.stringify(before, null, 2)}
+            </pre>
+          </div>
+          <div>
+            <div className="text-xs font-bold text-emerald-800 mb-1 flex items-center gap-1">
+              <Code className="w-3.5 h-3.5" /> After State (Raw JSON)
+            </div>
+            <pre className="bg-slate-950 text-emerald-400 p-3 rounded-lg text-xs font-mono overflow-x-auto max-h-80">
+              {JSON.stringify(after, null, 2)}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -546,7 +678,7 @@ export default function App() {
       perms.has('bloodbank.manage') ||
       ['doctor', 'patient', 'nurse'].includes(userRoleCode)
     ) {
-      items.push({ id: 'pharmacy', label: 'Pharmacy, Lab & Blood', icon: Pill });
+      items.push({ id: 'pharmacy', label: 'Pharmacy & Inventory', icon: Pill });
     }
     if (perms.has('finance.manage') || perms.has('insurance.manage') || userRoleCode === 'patient') {
       items.push({ id: 'billing', label: 'Billing & Insurance', icon: CreditCard });
@@ -982,7 +1114,7 @@ export default function App() {
           )}
 
           {activeTab === 'pharmacy' && (
-            <ClinicalDiagnosticsPanel searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
+            <PharmacyInventoryPanel searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
           {activeTab === 'billing' && (
@@ -1259,16 +1391,7 @@ export default function App() {
                                 {isExpanded && (
                                   <tr className="bg-slate-50 border-b border-slate-200">
                                     <td colSpan={7} className="p-5">
-                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                          <div className="text-xs font-bold text-amber-800 mb-1 flex items-center gap-1"><Code className="w-3.5 h-3.5" /> Before State</div>
-                                          <pre className="bg-slate-950 text-emerald-400 p-3 rounded-lg text-xs font-mono overflow-x-auto">{JSON.stringify(log.before, null, 2)}</pre>
-                                        </div>
-                                        <div>
-                                          <div className="text-xs font-bold text-emerald-800 mb-1 flex items-center gap-1"><Code className="w-3.5 h-3.5" /> After State</div>
-                                          <pre className="bg-slate-950 text-emerald-400 p-3 rounded-lg text-xs font-mono overflow-x-auto">{JSON.stringify(log.after, null, 2)}</pre>
-                                        </div>
-                                      </div>
+                                      <AuditDiffViewer before={log.before} after={log.after} />
                                     </td>
                                   </tr>
                                 )}

@@ -1,6 +1,6 @@
 {
-  "name": "ProjectPulse Dashboard",
-  "description": "A modern responsive project management dashboard with sidebar navigation, kanban boards, task analytics, team collaboration, and real-time activity feeds.",
+  "name": "CareLine HMS — Hospital Management System",
+  "description": "Complete Hospital Management System with patient care, clinical records, inpatient bed transfers, pharmacy, laboratory, billing, and real-time compliance auditing.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

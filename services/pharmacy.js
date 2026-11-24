@@ -2,8 +2,18 @@ import { AppError } from '../middleware/errors.js';
 import { validateAndRecordTransition } from './workflow.js';
 import { createInvoiceTx } from './billing.js';
 
-export function receiveMedicineBatchTx(db, { medicineId, batchNumber, expiryDate, quantity, costPrice = 0, actor }) {
+export function receiveMedicineBatchTx(db, brokerOrOptions, maybeOptions) {
+  let broker = null;
+  let options;
+  if (maybeOptions) {
+    broker = brokerOrOptions;
+    options = maybeOptions;
+  } else {
+    options = brokerOrOptions;
+  }
+
   return db.transaction(() => {
+    const { medicineId, batchNumber, expiryDate, quantity, costPrice = 0, actor } = options;
     const med = db.get('SELECT * FROM medicines WHERE id = ?', [medicineId]);
     if (!med) throw new AppError(404, 'Medicine not found.');
     const qty = Number(quantity);
@@ -28,7 +38,130 @@ export function receiveMedicineBatchTx(db, { medicineId, batchNumber, expiryDate
       [medicineId, info.lastInsertRowid, qty, actor.id, `Received batch ${batchNumber}`]
     );
 
+    const inv = db.get('SELECT total_quantity FROM pharmacy_inventory WHERE medicine_id = ?', [medicineId]);
+    const currentQty = inv ? inv.total_quantity : qty;
+    const isLowStock = currentQty <= med.reorder_level;
+    const isCritical = currentQty <= 5 || currentQty === 0;
+
+    if (broker) {
+      broker.publish('pharmacy:stock_updated', {
+        medicineId: med.id,
+        medicineName: med.name,
+        sku: med.sku,
+        totalQuantity: currentQty,
+        reorderLevel: med.reorder_level,
+        unit: med.unit,
+        isLowStock,
+        isCritical,
+        changeDelta: qty,
+        action: 'received',
+        batchNumber,
+        title: 'Medicine Batch Received',
+        message: `Batch ${batchNumber} received for ${med.name}. Available stock: ${currentQty} ${med.unit}.`
+      }, { roles: ['pharmacist', 'admin'] });
+    }
+
     return db.get('SELECT * FROM medicine_batches WHERE id = ?', [info.lastInsertRowid]);
+  })();
+}
+
+export function adjustStockTx(db, brokerOrOptions, maybeOptions) {
+  let broker = null;
+  let options;
+  if (maybeOptions) {
+    broker = brokerOrOptions;
+    options = maybeOptions;
+  } else {
+    options = brokerOrOptions;
+  }
+
+  return db.transaction(() => {
+    const { medicineId, batchId = null, quantityDelta, reason = 'Adjustment', notes = '', actor } = options;
+    const med = db.get('SELECT * FROM medicines WHERE id = ?', [medicineId]);
+    if (!med) throw new AppError(404, 'Medicine not found.');
+
+    const delta = Number(quantityDelta);
+    if (!delta || isNaN(delta)) throw new AppError(400, 'Valid quantity adjustment delta is required.');
+
+    const inv = db.get('SELECT total_quantity FROM pharmacy_inventory WHERE medicine_id = ?', [medicineId]);
+    const currentTotal = inv ? inv.total_quantity : 0;
+    const newTotal = currentTotal + delta;
+    if (newTotal < 0) {
+      throw new AppError(409, `Adjustment would reduce stock below zero. Current: ${currentTotal}, Delta: ${delta}`);
+    }
+
+    if (batchId) {
+      const batch = db.get('SELECT * FROM medicine_batches WHERE id = ? AND medicine_id = ?', [batchId, medicineId]);
+      if (!batch) throw new AppError(404, 'Batch not found for this medicine.');
+      const newBatchQty = batch.quantity_available + delta;
+      if (newBatchQty < 0) {
+        throw new AppError(409, `Adjustment would reduce batch quantity below zero. Available in batch: ${batch.quantity_available}`);
+      }
+      db.run('UPDATE medicine_batches SET quantity_available = quantity_available + ?, updated_at = datetime(\'now\') WHERE id = ?', [delta, batchId]);
+    }
+
+    db.run(
+      `INSERT INTO pharmacy_inventory (medicine_id, total_quantity, updated_at)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT(medicine_id) DO UPDATE SET total_quantity = total_quantity + excluded.total_quantity, updated_at = datetime('now')`,
+      [medicineId, delta]
+    );
+
+    const movInfo = db.run(
+      `INSERT INTO stock_movements (medicine_id, batch_id, movement_type, quantity_delta, reference_type, performed_by, notes)
+       VALUES (?, ?, ?, ?, 'adjustment', ?, ?)`,
+      [medicineId, batchId || null, reason, delta, actor.id, notes || `Manual stock adjustment (${reason})`]
+    );
+
+    const isLowStock = newTotal <= med.reorder_level;
+    const isCritical = newTotal <= 5 || newTotal === 0;
+
+    if (broker) {
+      broker.publish('pharmacy:stock_updated', {
+        medicineId: med.id,
+        medicineName: med.name,
+        sku: med.sku,
+        totalQuantity: newTotal,
+        reorderLevel: med.reorder_level,
+        unit: med.unit,
+        isLowStock,
+        isCritical,
+        changeDelta: delta,
+        action: 'adjusted',
+        reason,
+        title: 'Stock Adjusted',
+        message: `Inventory for ${med.name} adjusted by ${delta > 0 ? `+${delta}` : delta} ${med.unit}. New balance: ${newTotal}.`
+      }, { roles: ['pharmacist', 'admin'] });
+
+      if (isLowStock) {
+        const alertData = {
+          medicineId: med.id,
+          medicine_id: med.id,
+          medicineName: med.name,
+          name: med.name,
+          sku: med.sku,
+          totalQuantity: newTotal,
+          stock_qty: newTotal,
+          quantity: newTotal,
+          reorderLevel: med.reorder_level,
+          reorder_level: med.reorder_level,
+          unit: med.unit,
+          isCritical,
+          alertLevel: isCritical ? 'red' : 'amber',
+          title: isCritical ? 'Critical Low Stock Alert' : 'Low Stock Alert',
+          message: `${med.name} (${med.sku}) has reached ${isCritical ? 'CRITICAL' : 'low'} level: ${newTotal} ${med.unit} remaining (Reorder threshold: ${med.reorder_level}).`,
+          ts: new Date().toISOString()
+        };
+        broker.publish('low-stock', alertData, { roles: ['pharmacist', 'admin'] });
+        broker.publish('pharmacy:low_stock', alertData, { roles: ['pharmacist', 'admin'] });
+      }
+    }
+
+    return {
+      medicine: med,
+      newTotal,
+      movementId: movInfo.lastInsertRowid
+    };
   })();
 }
 
@@ -94,6 +227,50 @@ export function dispensePrescriptionTx(db, broker, { prescriptionId, actor }) {
           [rx.id, rx.patient_id, med.id, batch.id, deduct, deduct * med.unit_price, actor.id]
         );
         remaining -= deduct;
+      }
+
+      const updatedInv = db.get('SELECT total_quantity FROM pharmacy_inventory WHERE medicine_id = ?', [med.id]);
+      const currentQty = updatedInv ? updatedInv.total_quantity : 0;
+      const isLowStock = currentQty <= med.reorder_level;
+      const isCritical = currentQty <= 5 || currentQty === 0;
+
+      if (broker) {
+        broker.publish('pharmacy:stock_updated', {
+          medicineId: med.id,
+          medicineName: med.name,
+          sku: med.sku,
+          totalQuantity: currentQty,
+          reorderLevel: med.reorder_level,
+          unit: med.unit,
+          isLowStock,
+          isCritical,
+          changeDelta: -needed,
+          action: 'dispensed',
+          prescriptionRef: rx.prescription_ref
+        }, { roles: ['pharmacist', 'admin'] });
+
+        if (isLowStock) {
+          const alertData = {
+            medicineId: med.id,
+            medicine_id: med.id,
+            medicineName: med.name,
+            name: med.name,
+            sku: med.sku,
+            totalQuantity: currentQty,
+            stock_qty: currentQty,
+            quantity: currentQty,
+            reorderLevel: med.reorder_level,
+            reorder_level: med.reorder_level,
+            unit: med.unit,
+            isCritical,
+            alertLevel: isCritical ? 'red' : 'amber',
+            title: isCritical ? 'Critical Low Stock Alert' : 'Low Stock Warning',
+            message: `${med.name} (${med.sku}) has reached ${isCritical ? 'CRITICAL' : 'low'} level: ${currentQty} ${med.unit} remaining (Reorder threshold: ${med.reorder_level}).`,
+            ts: new Date().toISOString()
+          };
+          broker.publish('low-stock', alertData, { roles: ['pharmacist', 'admin'] });
+          broker.publish('pharmacy:low_stock', alertData, { roles: ['pharmacist', 'admin'] });
+        }
       }
 
       invoiceItems.push({

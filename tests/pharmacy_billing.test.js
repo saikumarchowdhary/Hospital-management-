@@ -1,6 +1,44 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import WebSocket from 'ws';
 import { startTestServer } from './helpers.js';
+
+function connectWs(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const messages = [];
+    ws.on('message', (data) => {
+      try {
+        messages.push(JSON.parse(String(data)));
+      } catch {
+        messages.push(String(data));
+      }
+    });
+    ws.once('open', () => resolve({ ws, messages }));
+    ws.once('error', reject);
+  });
+}
+
+function waitForWsEvent(wsObj, predicate, timeoutMs = 4000) {
+  const existing = wsObj.messages.find(predicate);
+  if (existing) return Promise.resolve(existing);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Timed out waiting for WebSocket event'));
+    }, timeoutMs);
+    const handler = (raw) => {
+      try {
+        const msg = JSON.parse(String(raw));
+        if (predicate(msg)) {
+          clearTimeout(timer);
+          wsObj.ws.off('message', handler);
+          resolve(msg);
+        }
+      } catch {}
+    };
+    wsObj.ws.on('message', handler);
+  });
+}
 
 test('Pharmacy & Billing: medicine/batch, dispense stock reduction, insufficient stock block, payment, idempotency, refund, CSV', async () => {
   const ctx = await startTestServer();
@@ -93,6 +131,96 @@ test('Pharmacy & Billing: medicine/batch, dispense stock reduction, insufficient
     assert.equal(csv.status, 200);
     assert.ok(csv.data.includes('invoice_number'));
   } finally {
+    await ctx.close();
+  }
+});
+
+test('Pharmacy Real-Time WebSockets: stock levels, batch receipt, physical count adjustment, critical low-stock alerting', async () => {
+  const ctx = await startTestServer();
+  let wsPharmacist = null;
+  try {
+    const phm = ctx.createClient();
+    const loginRes = await phm.login('pharmacy@demo.com', 'Pharmacy@123');
+    assert.equal(loginRes.status, 200);
+    const token = loginRes.data.token;
+
+    // Connect WebSocket
+    wsPharmacist = await connectWs(`${ctx.wsBaseUrl}/ws?token=${encodeURIComponent(token)}`);
+    const connEv = await waitForWsEvent(wsPharmacist, (m) => m.eventType === 'connected');
+    assert.equal(connEv.role, 'pharmacist');
+
+    // 1. Add new medicine with reorder level 15
+    const medRes = await phm.post('/api/pharmacy/medicines', {
+      sku: 'MED-WS-CRIT',
+      name: 'Epinephrine 1mg/ml',
+      generic_name: 'Adrenaline',
+      unit_price: 12.0,
+      reorder_level: 15,
+      unit: 'Ampoule'
+    });
+    assert.equal(medRes.status, 201);
+    const med = medRes.data.medicine;
+
+    // 2. Inbound batch receipt (quantity = 20) -> should trigger pharmacy:stock_updated
+    const batchPromise = waitForWsEvent(wsPharmacist, (m) => m.eventType === 'pharmacy:stock_updated' && m.medicineId === med.id);
+    const batchRes = await phm.post('/api/pharmacy/batches', {
+      medicine_id: med.id,
+      batch_number: 'BCH-EPI-001',
+      expiry_date: '2028-06-30',
+      quantity: 20,
+      cost_price: 6.0
+    });
+    assert.equal(batchRes.status, 201);
+    const batchEvent = await batchPromise;
+    assert.equal(batchEvent.totalQuantity, 20);
+    assert.equal(batchEvent.isLowStock, false);
+
+    // 3. Stock Adjustment down to 3 units (below reorder 15 AND critical <=5)
+    // -> should trigger both pharmacy:stock_updated AND pharmacy:low_stock with isCritical: true
+    const stockUpdatePromise = waitForWsEvent(
+      wsPharmacist,
+      (m) => m.eventType === 'pharmacy:stock_updated' && m.medicineId === med.id && m.action === 'adjusted'
+    );
+    const lowStockPromise = waitForWsEvent(
+      wsPharmacist,
+      (m) => (m.eventType === 'low-stock' || m.eventType === 'pharmacy:low_stock') && m.medicineId === med.id
+    );
+
+    const adjRes = await phm.post('/api/pharmacy/adjust-stock', {
+      medicine_id: med.id,
+      quantity_delta: -17, // 20 - 17 = 3
+      reason: 'Physical Inventory Count',
+      notes: 'Emergency cart restocking reconciliation'
+    });
+    assert.equal(adjRes.status, 200);
+    assert.equal(adjRes.data.newTotal, 3);
+
+    const [stockEv, lowStockEv] = await Promise.all([stockUpdatePromise, lowStockPromise]);
+    assert.equal(stockEv.totalQuantity, 3);
+    assert.equal(stockEv.isCritical, true);
+    assert.equal(stockEv.isLowStock, true);
+
+    assert.equal(lowStockEv.totalQuantity, 3);
+    assert.equal(lowStockEv.isCritical, true);
+    assert.ok(lowStockEv.message.includes('CRITICAL'));
+
+    // 4. Verify inventory endpoint provides summary metrics
+    const inv = await phm.get('/api/pharmacy/inventory');
+    assert.equal(inv.status, 200);
+    assert.ok(inv.data.summary);
+    assert.ok(inv.data.summary.totalMedicines > 0);
+    assert.ok(inv.data.summary.criticalCount >= 1);
+    assert.ok(inv.data.summary.lowStockCount >= 1);
+
+    // 5. Verify movements ledger recorded adjustment
+    const movs = await phm.get('/api/pharmacy/movements');
+    assert.equal(movs.status, 200);
+    assert.ok(movs.data.movements.length > 0);
+    const targetMov = movs.data.movements.find((m) => m.medicine_id === med.id);
+    assert.ok(targetMov);
+    assert.equal(targetMov.quantity_delta, -17);
+  } finally {
+    if (wsPharmacist?.ws) wsPharmacist.ws.close();
     await ctx.close();
   }
 });
