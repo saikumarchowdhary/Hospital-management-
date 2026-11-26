@@ -86,6 +86,17 @@ export function createHmsApp(options = {}) {
     res.json({ status: 'ok', service: 'MediCore HMS', timestamp: new Date().toISOString() });
   });
 
+  app.get('/api/admin/exists', (_req, res) => {
+    try {
+      const row = db.get(
+        `SELECT COUNT(*) as cnt FROM users u JOIN roles r ON r.id = u.role_id WHERE r.code = 'admin' AND u.is_active = 1`
+      );
+      res.json({ exists: Boolean(row && row.cnt > 0) });
+    } catch {
+      res.json({ exists: false });
+    }
+  });
+
   app.get('/api/prescriptions/verify/:ref', (req, res) => {
     const ref = String(req.params.ref || '').trim();
     if (!ref) {

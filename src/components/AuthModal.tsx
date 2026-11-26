@@ -34,7 +34,7 @@ export type LoginPortalType =
   | 'hr_publisher';
 
 export type HrPubSubRole = 'hr' | 'publisher' | 'approver';
-export type AccountTypeOption = 'patient' | 'candidate' | 'doctor' | 'staff' | 'admin' | 'department_admin';
+export type AccountTypeOption = 'patient' | 'candidate' | 'doctor' | 'staff';
 
 interface AuthModalProps {
   open: boolean;
@@ -143,6 +143,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     setPortal(initialPortal);
+    if (initialPortal === 'admin' || initialPortal === 'department_admin') {
+      setTab('login');
+    }
     if (initialPortal === 'hr') setHrPubRole('hr');
     if (initialPortal === 'publisher') setHrPubRole('publisher');
     if (initialPortal === 'approver') setHrPubRole('approver');
@@ -150,11 +153,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     if (!open) return;
-    setTab(initialTab);
+    if (initialPortal === 'admin' || initialPortal === 'department_admin' || portal === 'admin' || portal === 'department_admin') {
+      setTab('login');
+    } else {
+      setTab(initialTab);
+    }
     setErrorMsg(null);
     setSuccessMsg(null);
     setAccountType(initialAccountType || 'patient');
-  }, [open, initialTab, initialAccountType]);
+  }, [open, initialTab, initialAccountType, initialPortal, portal]);
 
   useEffect(() => {
     if (!open || needsSetup) return;
@@ -310,27 +317,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setBusy(true);
     try {
-      if (accountType === 'admin' || accountType === 'department_admin') {
-        const res = await apiRequest('/api/auth/register-admin-hr', {
-          method: 'POST',
-          body: {
-            account_type: accountType,
-            full_name: reg.full_name.trim(),
-            email: reg.email.trim(),
-            mobile: reg.mobile.trim(),
-            employee_id: reg.employee_id.trim(),
-            department_id: Number(reg.department_id),
-            designation: reg.designation.trim(),
-            password: reg.password,
-            confirm_password: reg.confirm,
-            verification_code: reg.verification_code.trim() || 'ADMIN123',
-          },
-        });
-        setAccessToken(res.token || res.accessToken);
-        onAuthenticated(res.user, `Welcome ${res.user.full_name}! ${res.user.role_name} account created.`);
-        return;
-      }
-
       const hasFile = Boolean((accountType === 'doctor' && (photoFile || licenceFile)) || (accountType === 'staff' && staffDocFile));
       let body: any;
       if (hasFile) {
@@ -528,7 +514,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </div>
 
-        {!needsSetup && (
+        {!needsSetup && portal !== 'admin' && portal !== 'department_admin' && (
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
             <button
               type="button"
@@ -644,6 +630,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       data-testid={`portal-${card.id}`}
                       onClick={() => {
                         setPortal(card.id);
+                        if (card.id === 'admin' || card.id === 'department_admin') {
+                          setTab('login');
+                        }
                         setErrorMsg(null);
                       }}
                       className={`p-2.5 rounded-xl border text-left transition-all ${
@@ -898,14 +887,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <form onSubmit={submitRegister} className="space-y-3">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">I am a...</label>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {[
                   { id: 'patient', label: 'Patient' },
                   { id: 'doctor', label: 'Doctor' },
                   { id: 'candidate', label: 'Candidate' },
                   { id: 'staff', label: 'Hospital Staff' },
-                  { id: 'department_admin', label: 'Dept Admin' },
-                  { id: 'admin', label: 'Admin' },
                 ].map((opt) => (
                   <button
                     key={opt.id}
@@ -926,9 +913,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 ))}
               </div>
               <p className="text-[11px] text-slate-500 mt-1.5">
-                {accountType === 'admin' || accountType === 'department_admin'
-                  ? 'Admin and Department Admin creation requires the Admin Verification Code (ADMIN123).'
-                  : 'Register a patient, candidate, doctor, or hospital staff member.'}
+                Administrator accounts cannot be created via public sign-up. Contact an existing administrator.
               </p>
             </div>
 
@@ -1113,51 +1098,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                 )}
 
-                {(accountType === 'admin' || accountType === 'department_admin') && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-900 text-white rounded-xl">
-                    <div className="sm:col-span-2 text-xs font-bold text-amber-300 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <Shield className="w-4 h-4" />
-                        <span>{accountType === 'admin' ? 'Super Admin Registration' : 'Department Admin Registration'}</span>
-                      </span>
-                      <span className="text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded font-mono font-bold">
-                        ADMIN 123
-                      </span>
-                    </div>
-                    <input
-                      required
-                      value={reg.employee_id}
-                      onChange={(e) => setReg({ ...reg, employee_id: e.target.value })}
-                      placeholder="Employee ID / Badge No *"
-                      className="px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs placeholder:text-slate-400"
-                    />
-                    <input
-                      required
-                      value={reg.designation}
-                      onChange={(e) => setReg({ ...reg, designation: e.target.value })}
-                      placeholder="Designation (e.g. Dept Head) *"
-                      className="px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs placeholder:text-slate-400"
-                    />
-                    <select
-                      required
-                      value={reg.department_id}
-                      onChange={(e) => setReg({ ...reg, department_id: e.target.value })}
-                      className="sm:col-span-2 px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs"
-                    >
-                      <option value="">Select Department *</option>
-                      {regMeta.departments.map((d) => (
-                        <option key={d.id} value={d.id}>{d.name} ({d.branch_name || 'Main'})</option>
-                      ))}
-                    </select>
-                    <input
-                      required
-                      value={reg.verification_code}
-                      onChange={(e) => setReg({ ...reg, verification_code: e.target.value })}
-                      placeholder="Admin Verification Code (Enter ADMIN123) *"
-                      className="sm:col-span-2 px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs placeholder:text-slate-400 font-mono"
-                    />
-                  </div>
-                )}
+
               </>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1198,11 +1139,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <button
               disabled={busy}
               type="submit"
-              className={`w-full py-2.5 font-semibold text-sm rounded-xl text-white ${
-                accountType === 'admin' || accountType === 'department_admin'
-                  ? 'bg-slate-900 hover:bg-slate-800'
-                  : 'bg-blue-600 hover:bg-blue-700'
-              }`}
+              className="w-full py-2.5 font-semibold text-sm rounded-xl text-white bg-blue-600 hover:bg-blue-700"
             >
               {busy
                 ? 'Submitting...'
@@ -1212,10 +1149,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 ? 'Create Candidate Account'
                 : accountType === 'doctor'
                 ? 'Submit Doctor Verification'
-                : accountType === 'admin'
-                ? 'Create Admin Account'
-                : accountType === 'department_admin'
-                ? 'Create Department Admin Account'
                 : 'Submit Staff Request'}
             </button>
           </form>

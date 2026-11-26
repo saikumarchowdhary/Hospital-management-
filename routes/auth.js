@@ -605,7 +605,38 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       body('password').custom(isStrongPassword).withMessage('Password must be at least 8 characters and include at least one number.')
     ],
     validateRequest,
-    asyncHandler(async (req, res) => handleAdminOrHrRegistration(db, jwtSecret, broker, req, res))
+    asyncHandler(async (req, res) => {
+      const normType = String(req.body.account_type || '').trim().toLowerCase();
+      const isAdminType = ['admin', 'super_admin', 'department_admin'].includes(normType);
+      const adminCount = db.get(`SELECT COUNT(*) as cnt FROM users u JOIN roles r ON r.id = u.role_id WHERE r.code = 'admin' AND u.is_active = 1`)?.cnt || 0;
+      let verifiedCode = null;
+      if (adminCount > 0 && isAdminType) {
+        const authHeader = req.headers.authorization;
+        const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.cookies?.[COOKIE_NAME] || null);
+        let actor = null;
+        if (token) {
+          try {
+            const decoded = jwt.verify(token, jwtSecret);
+            actor = db.get('SELECT u.*, r.code as role FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?', [decoded.sub]);
+          } catch {}
+        }
+        const isAdmin = actor && actor.role === 'admin' && actor.is_active;
+        if (isAdmin) {
+          req.user = actor;
+        } else {
+          const verCode = String(req.body.verification_code || '').trim();
+          if (!verCode) {
+            throw new AppError(403, 'Invalid Admin Verification Code.');
+          }
+          const verified = verifyAdminInvitationCode(db, verCode, req.body.department_id);
+          if (!verified.ok) {
+            throw new AppError(403, 'Invalid Admin Verification Code.');
+          }
+          verifiedCode = verified;
+        }
+      }
+      return handleAdminOrHrRegistration(db, jwtSecret, broker, req, res, verifiedCode);
+    })
   );
 
   router.post('/forgot-password', limiter, [body('email').isEmail().withMessage('Valid email is required.')], validateRequest, asyncHandler(async (req, res) => {

@@ -99,9 +99,9 @@ export const AddAdminPanel: React.FC<AddAdminPanelProps> = ({ onNotify, refreshS
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Add Admin</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Create Admin</h2>
           <p className="text-sm text-slate-500 mt-1">
-            Only existing administrators can provision new Admin accounts. Public admin self-registration is disabled.
+            Only authenticated administrators can provision new Admin accounts. Public admin self-registration is blocked.
           </p>
         </div>
         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-semibold">

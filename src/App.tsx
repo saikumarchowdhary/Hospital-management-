@@ -85,7 +85,7 @@ import { Megaphone, Building2, ClipboardCheck, FileText, QrCode } from 'lucide-r
 const ADMIN_TAB_TO_PATH: Record<string, string> = {
   dashboard: '/admin/dashboard',
   admin_qr_labels: '/admin/qr-labels',
-  add_admin: '/admin/add-admin',
+  add_admin: '/admin/create-admin',
   users_signups: '/admin/users',
   departments: '/admin/departments',
   finance_payroll: '/admin/finance',
@@ -102,7 +102,7 @@ const ADMIN_PATH_TO_TAB: Record<string, string> = Object.entries(ADMIN_TAB_TO_PA
     acc[path] = tabId;
     return acc;
   },
-  {} as Record<string, string>
+  { '/admin/add-admin': 'add_admin' } as Record<string, string>
 );
 
 interface AuthUser {
@@ -438,9 +438,27 @@ export default function App() {
 
   // Initial session hydration, setup check & optional demo account catalog
   useEffect(() => {
-    apiRequest<{ needsSetup: boolean; demoAccountsVisible: boolean }>('/api/auth/setup-status')
+    apiRequest<{ exists: boolean }>('/api/admin/exists')
       .then((res) => {
-        setNeedsSetup(Boolean(res?.needsSetup));
+        const adminExists = Boolean(res?.exists);
+        setNeedsSetup(!adminExists);
+        const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+        if (adminExists && (pathname === '/admin/signup' || pathname === '/admin/register' || pathname === '/admin/create-account')) {
+          window.history.replaceState(null, '', '/login');
+          setAuthPortal('admin');
+          setAuthInitialTab('login');
+          setAuthModalOpen(true);
+        } else if (!adminExists && pathname !== '/admin/signup') {
+          window.history.replaceState(null, '', '/admin/signup');
+          setNeedsSetup(true);
+          setAuthPortal('admin');
+          setAuthModalOpen(true);
+        }
+      })
+      .catch(() => {});
+
+    apiRequest<{ demoAccountsVisible?: boolean }>('/api/auth/setup-status')
+      .then((res) => {
         if (res?.demoAccountsVisible) {
           apiRequest('/api/demo-accounts')
             .then((dRes) => {
@@ -479,11 +497,19 @@ export default function App() {
         if (/^\/verify\/prescription\/[^/]+$/i.test(pathname)) {
           return;
         }
-        if (pathname === '/admin' || pathname.startsWith('/admin/')) {
-          window.history.replaceState(null, '', '/');
-          setAuthPortal('admin');
+        if (pathname === '/admin/signup' || pathname === '/admin/register' || pathname === '/admin/create-account') {
+          return;
         }
-        setAuthModalOpen(true);
+        if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+          window.history.replaceState(null, '', '/login');
+          setAuthPortal('admin');
+          setAuthInitialTab('login');
+          setAuthModalOpen(true);
+        } else if (pathname === '/login' || pathname === '/signin') {
+          setAuthPortal('patient');
+          setAuthInitialTab('login');
+          setAuthModalOpen(true);
+        }
       });
   }, [loadAuthenticatedWorkspace, getHomeTabForRole, notify]);
 
@@ -977,7 +1003,7 @@ export default function App() {
     }
     if (userRoleCode === 'admin') {
       items.push({ id: 'users_signups', label: 'Users & Staff', icon: UserCheck, badge: pendingSignupsCount });
-      items.push({ id: 'add_admin', label: 'Add Admin', icon: Shield });
+      items.push({ id: 'add_admin', label: 'Create Admin', icon: Shield });
       items.push({ id: 'departments', label: 'Departments', icon: Building2 });
       items.push({ id: 'admin_prescriptions', label: 'All Prescriptions', icon: FileText });
       items.push({ id: 'admin_payments', label: 'All Payments', icon: CreditCard });
@@ -1005,9 +1031,27 @@ export default function App() {
     };
     const syncFromPath = () => {
       const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+      if (pathname === '/admin/signup' || pathname === '/admin/register' || pathname === '/admin/create-account') {
+        apiRequest<{ exists: boolean }>('/api/admin/exists')
+          .then((res) => {
+            if (res?.exists) {
+              window.history.replaceState(null, '', '/login');
+              setNeedsSetup(false);
+              setAuthPortal('admin');
+              setAuthInitialTab('login');
+              setAuthModalOpen(true);
+            } else {
+              setNeedsSetup(true);
+              setAuthPortal('admin');
+              setAuthModalOpen(true);
+            }
+          })
+          .catch(() => {});
+        return;
+      }
       if (pathname === '/admin' || pathname.startsWith('/admin/')) {
         if (!authUser) {
-          window.history.replaceState(null, '', '/');
+          window.history.replaceState(null, '', '/login');
           setAuthPortal('admin');
           setAuthInitialTab('login');
           setAuthModalOpen(true);
@@ -1475,6 +1519,18 @@ export default function App() {
                   <p className="text-sm text-slate-500 mt-1">Real-time hospital telemetry, capacity overview, and search query insights.</p>
                 </div>
                 <div className="flex items-center gap-3">
+                  {userRoleCode === 'admin' && (
+                    <button
+                      onClick={() => {
+                        setActiveTab('add_admin');
+                        window.history.pushState(null, '', '/admin/create-admin');
+                      }}
+                      className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 shadow-xs"
+                    >
+                      <Shield className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Create Admin</span>
+                    </button>
+                  )}
                   {userRoleCode === 'doctor' && (
                     <button onClick={() => setDoctorWizardOpen(true)} className="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold">
                       Configure Schedule
