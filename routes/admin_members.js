@@ -158,19 +158,20 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
     const existing = db.get('SELECT * FROM users WHERE id = ?', [uid]);
     if (!existing) throw new AppError(404, 'Member not found.');
 
-    const { full_name, phone, department_id, branch_id, role_id, designation, qualification, shift, experience_years, consultation_fee, specialty_id } = req.body;
+    const { full_name, phone, department_id, branch_id, role_id, designation, qualification, shift, employment_type, base_salary, experience_years, consultation_fee, specialty_id } = req.body;
     db.transaction(() => {
       db.run(
         `UPDATE users SET full_name = COALESCE(?, full_name), phone = COALESCE(?, phone),
                 department_id = ?, branch_id = COALESCE(?, branch_id), role_id = COALESCE(?, role_id), updated_at = datetime('now') WHERE id = ?`,
-        [full_name?.trim() || null, phone ?? null, department_id ? Number(department_id) : existing.department_id, branch_id ? Number(branch_id) : null, role_id ? Number(role_id) : null, uid]
+        [full_name?.trim() || null, phone ?? null, department_id !== undefined ? (department_id ? Number(department_id) : null) : existing.department_id, branch_id ? Number(branch_id) : null, role_id ? Number(role_id) : null, uid]
       );
       const emp = db.get('SELECT id FROM employee_profiles WHERE user_id = ?', [uid]);
       if (emp) {
         db.run(
           `UPDATE employee_profiles SET department_id = ?, branch_id = COALESCE(?, branch_id), designation = COALESCE(?, designation),
-                  qualification = COALESCE(?, qualification), shift = COALESCE(?, shift), updated_at = datetime('now') WHERE user_id = ?`,
-          [department_id ? Number(department_id) : existing.department_id, branch_id ? Number(branch_id) : null, designation || null, qualification || null, shift || null, uid]
+                  qualification = COALESCE(?, qualification), shift = COALESCE(?, shift), employment_type = COALESCE(?, employment_type),
+                  base_salary = COALESCE(?, base_salary), updated_at = datetime('now') WHERE user_id = ?`,
+          [department_id !== undefined ? (department_id ? Number(department_id) : null) : existing.department_id, branch_id ? Number(branch_id) : null, designation || null, qualification || null, shift || null, employment_type || null, base_salary !== undefined ? Number(base_salary) : null, uid]
         );
       }
       const doc = db.get('SELECT id FROM doctor_profiles WHERE user_id = ?', [uid]);
@@ -179,14 +180,45 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
           `UPDATE doctor_profiles SET department_id = ?, branch_id = COALESCE(?, branch_id), specialty_id = COALESCE(?, specialty_id),
                   qualification = COALESCE(?, qualification), experience_years = COALESCE(?, experience_years),
                   consultation_fee = COALESCE(?, consultation_fee), updated_at = datetime('now') WHERE user_id = ?`,
-          [department_id ? Number(department_id) : existing.department_id, branch_id ? Number(branch_id) : null, specialty_id ? Number(specialty_id) : null, qualification || null, experience_years !== undefined ? Number(experience_years) : null, consultation_fee !== undefined ? Number(consultation_fee) : null, uid]
+          [department_id !== undefined ? (department_id ? Number(department_id) : null) : existing.department_id, branch_id ? Number(branch_id) : null, specialty_id ? Number(specialty_id) : null, qualification || null, experience_years !== undefined ? Number(experience_years) : null, consultation_fee !== undefined ? Number(consultation_fee) : null, uid]
         );
       }
-      logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.member_updated', entityType: 'user', entityId: uid });
+      logAudit(db, {
+        actorUserId: req.user.id,
+        actorRole: 'admin',
+        action: 'admin.member_updated',
+        entityType: 'user',
+        entityId: uid,
+        details: {
+          before: { full_name: existing.full_name, role_id: existing.role_id, department_id: existing.department_id, branch_id: existing.branch_id },
+          after: { full_name: full_name || existing.full_name, role_id: role_id || existing.role_id, department_id: department_id ?? existing.department_id, branch_id: branch_id || existing.branch_id }
+        }
+      });
     })();
 
     if (broker) broker.publish('member:updated', { userId: uid, title: 'Member Updated', message: `${full_name || existing.full_name} profile updated.` }, { roles: ['admin', 'hr'] });
     res.json({ ok: true });
+  }));
+
+  router.patch('/members/:id/role', asyncHandler(async (req, res) => {
+    const uid = Number(req.params.id);
+    const { role_id, role_code } = req.body;
+    const existing = db.get('SELECT u.*, r.code as role_code FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?', [uid]);
+    if (!existing) throw new AppError(404, 'Member not found.');
+    const targetRole = role_id
+      ? db.get('SELECT * FROM roles WHERE id = ?', [Number(role_id)])
+      : db.get('SELECT * FROM roles WHERE code = ?', [String(role_code || '')]);
+    if (!targetRole) throw new AppError(404, 'Target role not found.');
+    db.run("UPDATE users SET role_id = ?, updated_at = datetime('now') WHERE id = ?", [targetRole.id, uid]);
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.role_assigned',
+      entityType: 'user',
+      entityId: uid,
+      details: { before: { role: existing.role_code }, after: { role: targetRole.code } }
+    });
+    res.json({ ok: true, role: targetRole });
   }));
 
   router.post('/members/:id/review', asyncHandler(async (req, res) => {

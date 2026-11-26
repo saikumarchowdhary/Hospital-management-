@@ -183,7 +183,89 @@ export function runMigrations(db) {
   ensureCol('staff_signup_requests', 'licence_attachment_id', 'INTEGER');
   ensureCol('staff_signup_requests', 'photo_attachment_id', 'INTEGER');
 
+  // Admin Departments, Branches & HR/Recruitment/Publishing Schema Extensions
+  ensureCol('departments', 'head_user_id', 'INTEGER REFERENCES users(id)');
+  ensureCol('departments', 'description', 'TEXT');
+  ensureCol('branches', 'city', 'TEXT');
+  ensureCol('employee_profiles', 'employment_type', "TEXT NOT NULL DEFAULT 'Full-Time'");
+
+  ensureCol('job_vacancies', 'location', "TEXT NOT NULL DEFAULT 'Main Campus'");
+  ensureCol('job_vacancies', 'required_experience', 'TEXT');
+  ensureCol('job_vacancies', 'required_qualifications', 'TEXT');
+  ensureCol('job_vacancies', 'opening_date', 'TEXT');
+  ensureCol('job_vacancies', 'closing_date', 'TEXT');
+
+  ensureCol('job_applications', 'rejection_reason', 'TEXT');
+  ensureCol('job_applications', 'reviewer_notes', 'TEXT');
+  ensureCol('job_applications', 'reviewed_by', 'INTEGER REFERENCES users(id)');
+  ensureCol('job_applications', 'cert_attachment_id', 'INTEGER');
+
+  ensureCol('interviews', 'interviewer_user_id', 'INTEGER REFERENCES users(id)');
+  ensureCol('interviews', 'notes', 'TEXT');
+  ensureCol('interviews', 'recorded_by', 'INTEGER REFERENCES users(id)');
+
+  ensureCol('announcements', 'category', "TEXT NOT NULL DEFAULT 'General'");
+  ensureCol('announcements', 'department_id', 'INTEGER REFERENCES departments(id)');
+  ensureCol('announcements', 'branch_id', 'INTEGER REFERENCES branches(id)');
+  ensureCol('announcements', 'published_at', 'TEXT');
+  ensureCol('announcements', 'archived_at', 'TEXT');
+
+  ensureCol('campaigns', 'published_at', 'TEXT');
+  ensureCol('campaigns', 'archived_at', 'TEXT');
+
   db.exec(`
+    CREATE TABLE IF NOT EXISTS employee_documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employee_profiles(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      doc_type TEXT NOT NULL DEFAULT 'Contract',
+      attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+      uploaded_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_docs_emp ON employee_documents(employee_id);
+
+    CREATE TABLE IF NOT EXISTS candidate_documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL REFERENCES job_applications(id) ON DELETE CASCADE,
+      candidate_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      doc_type TEXT NOT NULL DEFAULT 'Certificate',
+      title TEXT NOT NULL,
+      attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_candidate_docs_app ON candidate_documents(application_id);
+
+    CREATE TABLE IF NOT EXISTS offers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      offer_ref TEXT NOT NULL UNIQUE,
+      application_id INTEGER NOT NULL UNIQUE REFERENCES job_applications(id) ON DELETE CASCADE,
+      candidate_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      vacancy_id INTEGER NOT NULL REFERENCES job_vacancies(id) ON DELETE RESTRICT,
+      offered_salary REAL NOT NULL,
+      joining_date TEXT NOT NULL,
+      employment_type TEXT NOT NULL DEFAULT 'Full-Time',
+      letter_attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'Issued',
+      candidate_response_notes TEXT,
+      responded_at TEXT,
+      issued_by INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_offers_candidate ON offers(candidate_user_id, status);
+
+    CREATE TABLE IF NOT EXISTS notice_acknowledgements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      viewed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      acknowledged_at TEXT,
+      UNIQUE(announcement_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_notice_acks_ann ON notice_acknowledgements(announcement_id, user_id);
+
     UPDATE doctor_profiles SET schedule_configured = 1
     WHERE schedule_configured = 0 AND EXISTS (
       SELECT 1 FROM doctor_schedules ds WHERE ds.doctor_id = doctor_profiles.id AND ds.is_active = 1

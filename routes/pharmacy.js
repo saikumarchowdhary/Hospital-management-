@@ -9,7 +9,10 @@ export function createPharmacyRouter(db, broker, authenticate) {
   const router = express.Router();
   router.use(authenticate);
 
-  router.get('/inventory', asyncHandler(async (_req, res) => {
+  router.get('/inventory', asyncHandler(async (req, res) => {
+    if (!['admin', 'pharmacist', 'doctor', 'nurse', 'receptionist', 'case_manager', 'patient'].includes(req.user.role)) {
+      throw new AppError(403, 'Access denied to pharmacy inventory.');
+    }
     const medicines = db.all(
       `SELECT m.*, mc.name as category_name, COALESCE(pi.total_quantity, 0) as total_quantity
        FROM medicines m
@@ -186,7 +189,10 @@ export function createPharmacyRouter(db, broker, authenticate) {
     res.json(result);
   }));
 
-  router.get('/movements', asyncHandler(async (_req, res) => {
+  router.get('/movements', requirePermission('pharmacy.dispense', 'reports.view'), asyncHandler(async (req, res) => {
+    if (!['admin', 'pharmacist', 'doctor'].includes(req.user.role)) {
+      throw new AppError(403, 'Access denied to pharmacy stock movements.');
+    }
     const movements = db.all(
       `SELECT sm.*, m.name as medicine_name, m.sku, m.unit, mb.batch_number, u.full_name as actor_name
        FROM stock_movements sm
@@ -199,6 +205,9 @@ export function createPharmacyRouter(db, broker, authenticate) {
   }));
 
   router.get('/prescriptions', asyncHandler(async (req, res) => {
+    if (!['patient', 'admin', 'pharmacist', 'doctor', 'nurse'].includes(req.user.role)) {
+      throw new AppError(403, 'Access denied to patient prescriptions.');
+    }
     const where = req.user.role === 'patient' ? 'r.patient_id = ?' : '1=1';
     const params = req.user.role === 'patient' ? [req.user.patient_id] : [];
     const prescriptions = db.all(

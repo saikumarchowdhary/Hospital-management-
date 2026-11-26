@@ -49,11 +49,11 @@ export const WORKFLOW_TRANSITIONS = {
     Settled: []
   },
   recruitment: {
-    Submitted: ['Under Review', 'Shortlisted', 'Not Selected'],
-    'Under Review': ['Shortlisted', 'Not Selected'],
-    Shortlisted: ['Interview Scheduled', 'Not Selected'],
-    'Interview Scheduled': ['Selected', 'Not Selected'],
-    Selected: ['Offer Issued'],
+    Submitted: ['Under Review', 'Shortlisted', 'Interview Scheduled', 'Not Selected'],
+    'Under Review': ['Shortlisted', 'Interview Scheduled', 'Not Selected'],
+    Shortlisted: ['Interview Scheduled', 'Selected', 'Not Selected'],
+    'Interview Scheduled': ['Interview Scheduled', 'Selected', 'Offer Issued', 'Not Selected'],
+    Selected: ['Offer Issued', 'Joined', 'Not Selected'],
     'Offer Issued': ['Joined', 'Not Selected'],
     Joined: [],
     'Not Selected': []

@@ -19,6 +19,9 @@ export function createRadiologyRouter(db, broker, authenticate, upload) {
   }));
 
   router.get('/orders', asyncHandler(async (req, res) => {
+    if (req.user.role !== 'patient' && !['admin', 'radiologist', 'doctor', 'nurse', 'lab_staff'].includes(req.user.role)) {
+      throw new AppError(403, 'Access denied to radiology orders.');
+    }
     const where = req.user.role === 'patient' ? 'ro.patient_id = ?' : '1=1';
     const params = req.user.role === 'patient' ? [req.user.patient_id] : [];
     const orders = db.all(

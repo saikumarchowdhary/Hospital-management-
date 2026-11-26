@@ -112,7 +112,7 @@ export function csrfProtect(req, res, next) {
 export function hydrateAuthenticatedUser(db, userId) {
   const user = db.get(
     `SELECT u.id, u.user_code, u.email, u.full_name, u.phone, u.branch_id, u.department_id,
-            u.is_active, u.account_status, r.id as role_id, r.code as role, r.name as role_name, r.is_staff,
+            u.is_active, u.account_status, u.last_login_at, r.id as role_id, r.code as role, r.name as role_name, r.is_staff,
             d.name as department_name, b.name as branch_name
      FROM users u
      JOIN roles r ON r.id = u.role_id
@@ -144,6 +144,7 @@ export function hydrateAuthenticatedUser(db, userId) {
   if (user.is_staff) {
     const emp = db.get('SELECT id, employee_code FROM employee_profiles WHERE user_id = ?', [user.id]);
     user.employee_id = emp ? emp.id : null;
+    user.employee_code = emp ? emp.employee_code : null;
   }
   return user;
 }

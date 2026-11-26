@@ -181,7 +181,7 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
     ],
     validateRequest,
     asyncHandler(async (req, res) => {
-      const { identifier, password, remember = true, expected_role = null } = req.body;
+      const { identifier, password, remember = true, expected_role = null, expected_portal = null } = req.body;
       const user = db.get(
         `SELECT u.*, r.code as role, r.name as role_name, r.is_staff,
                 d.name as department_name, b.name as branch_name
@@ -240,12 +240,38 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       if (expected_role && user.role !== expected_role) {
         return res.status(403).json({ error: `Account belongs to "${user.role_name}". Switch to the ${user.role_name} portal to sign in.` });
       }
+      if (expected_portal) {
+        const CLINICAL_OPS_STAFF_ROLES = [
+          'doctor', 'nurse', 'receptionist', 'lab_staff', 'radiologist',
+          'pharmacist', 'accountant', 'case_manager', 'housekeeping',
+          'bloodbank_staff', 'external_coordinator'
+        ];
+        const HR_PUB_ROLES = ['hr', 'publisher', 'approver'];
+        const portalAllowed =
+          (expected_portal === 'patient' && (user.role === 'patient' || user.role === 'candidate')) ||
+          (expected_portal === 'staff' && CLINICAL_OPS_STAFF_ROLES.includes(user.role)) ||
+          (expected_portal === 'admin' && user.role === 'admin') ||
+          (expected_portal === 'hr_publisher' && HR_PUB_ROLES.includes(user.role));
+        if (!portalAllowed) {
+          return res.status(403).json({
+            error: `Access denied for this portal. "${user.role_name}" accounts must sign in through their designated portal.`
+          });
+        }
+      }
 
       db.run("UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = datetime('now') WHERE id = ?", [user.id]);
       const { accessToken, refreshToken, expiresAt } = issueSessionTokens(user.id, user.role, jwtSecret, remember);
       setAuthCookie(req, res, accessToken, remember, refreshToken);
 
-      logAudit(db, { actorUserId: user.id, actorRole: user.role, action: 'auth.login_success', entityType: 'user', entityId: user.id, ip: req.ip });
+      logAudit(db, {
+        actorUserId: user.id,
+        actorRole: user.role,
+        action: 'auth.login_success',
+        entityType: 'user',
+        entityId: user.id,
+        details: JSON.stringify({ portal: expected_portal || expected_role || 'unified', ip: req.ip }),
+        ip: req.ip
+      });
       const hydratedUser = hydrateAuthenticatedUser(db, user.id);
 
       return res.json({
@@ -458,6 +484,77 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
     logAudit(db, { actorUserId: req.user.id, actorRole: 'pending_staff', action: 'auth.staff_signup_withdrawn', entityType: 'user', entityId: req.user.id });
     res.json({ message: 'Registration request successfully withdrawn.' });
   }));
+
+  router.patch(
+    '/profile',
+    authenticate,
+    [
+      body('full_name').optional({ checkFalsy: true }).trim().isLength({ min: 2 }).withMessage('Full name must be at least 2 characters.'),
+      body('phone').optional({ checkFalsy: false }).trim().isLength({ max: 40 }).withMessage('Phone number is too long.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => {
+      const current = db.get('SELECT id, full_name, phone FROM users WHERE id = ?', [req.user.id]);
+      if (!current) throw new AppError(404, 'User not found.');
+      const nextName = req.body.full_name !== undefined ? String(req.body.full_name).trim() : current.full_name;
+      const nextPhone = req.body.phone !== undefined ? String(req.body.phone).trim() : current.phone;
+
+      db.run("UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?", [
+        nextName,
+        nextPhone,
+        req.user.id
+      ]);
+
+      logAudit(db, {
+        actorUserId: req.user.id,
+        actorRole: req.user.role,
+        action: 'auth.profile_updated',
+        entityType: 'user',
+        entityId: req.user.id,
+        details: JSON.stringify({
+          before: { full_name: current.full_name, phone: current.phone },
+          after: { full_name: nextName, phone: nextPhone }
+        }),
+        ip: req.ip
+      });
+
+      const user = hydrateAuthenticatedUser(db, req.user.id);
+      return res.json({ message: 'Profile updated successfully.', user });
+    })
+  );
+
+  router.post(
+    '/change-password',
+    authenticate,
+    [
+      body('current_password').notEmpty().withMessage('Current password is required.'),
+      body('new_password').custom(isStrongPassword).withMessage('New password must be at least 8 characters and include at least one number.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => {
+      const { current_password, new_password } = req.body;
+      const row = db.get('SELECT id, password_hash FROM users WHERE id = ?', [req.user.id]);
+      if (!row || !bcrypt.compareSync(current_password, row.password_hash)) {
+        throw new AppError(400, 'Current password is incorrect.');
+      }
+      if (current_password === new_password) {
+        throw new AppError(400, 'New password must differ from current password.');
+      }
+      db.run("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?", [
+        bcrypt.hashSync(new_password, 10),
+        req.user.id
+      ]);
+      logAudit(db, {
+        actorUserId: req.user.id,
+        actorRole: req.user.role,
+        action: 'auth.password_changed',
+        entityType: 'user',
+        entityId: req.user.id,
+        ip: req.ip
+      });
+      return res.json({ message: 'Password updated successfully.' });
+    })
+  );
 
   router.post('/logout', (req, res) => { clearAuthCookie(req, res); res.json({ message: 'Logged out successfully.' }); });
   router.get('/me', authenticate, (req, res) => res.json({ user: req.user }));

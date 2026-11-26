@@ -1,0 +1,351 @@
+# MASTER BUILD PROMPT — Integrated Hospital Management System (HMS) + Patient Mobile App
+
+> Paste everything below into your AI coding tool (Claude Code, Cursor, etc.). It is derived line-by-line from "Hospital Management – Functional Detailed Requirements & Input–Output Flows". Section numbers (§) refer to that document.
+
+---
+
+## 0. ROLE AND MISSION
+
+You are a senior full-stack architect and engineer. Build a production-grade **Integrated Hospital Management System** consisting of:
+
+1. **Patient Mobile App** (cross-platform, Flutter or React Native)
+2. **Hospital Staff Portal** (responsive web app)
+3. **Backend platform** (REST/GraphQL API, background workers, integrations layer)
+4. **Engagement modules** (Careers, Announcements, Advertisements)
+5. **External Coordination modules** (blood, suppliers, housekeeping, insurance/TPA, manpower, centralized availability)
+6. **Admin, reporting, security, privacy, integrations**
+
+All names, dates, amounts, counts and provider examples are **sample/seed data, not production values**. Every screen showing sample values must clearly label them "Sample / Illustrative"; dashboards must distinguish **live, delayed and mock** data.
+
+**Working method:** First produce (a) architecture + ERD + API list + state machines, (b) a phased task plan following §9 roadmap. Then build phase by phase, with tests, and stop for review after each phase. Where the spec says "requires business confirmation", implement it as **admin-configurable settings** with sensible defaults — never hard-code policy.
+
+---
+
+## 1. TECH STACK (propose, then proceed unless I object)
+
+- Mobile: Flutter (or React Native) with biometric auth, push (FCM/APNs), deep links, offline-safe empty/error states.
+- Web portal: React + TypeScript (Next.js), component library, accessible (WCAG 2.1 AA).
+- Backend: Node.js (NestJS) or Python (FastAPI); PostgreSQL; Redis (queues, slot holds, rate limits); object storage (S3-compatible) for documents; message queue/worker for notifications & integrations.
+- Auth: OAuth2/OIDC-style JWT + refresh, RBAC + ABAC (branch/department scope), MFA (TOTP/SMS) for staff/admin.
+- Infra: Docker, CI/CD, environment config, migrations, seed scripts, OpenAPI docs, structured logging, health/monitoring endpoints.
+- Multi-branch data model from day one (branch_id on all operational entities), even though multi-branch UI is Phase 3.
+
+---
+
+## 2. ACTORS & ROLES (§2) — implement as configurable RBAC roles
+
+| Role | Capabilities (all subject to configured permissions) |
+|---|---|
+| Patient | Register, manage profile, book appointments, view own records, pay bills, book tests, view prescriptions, request emergency help |
+| Doctor | Schedules, appointments, admissions, prescriptions, reports, documents, notices; payroll view where authorized |
+| Nurse | Patient care workflows, bed allocation, reports, notices; payroll view where authorized |
+| Receptionist | Appointments, patient requests/records, front-office services, mail services, notices |
+| Case manager | Admissions, case handling, ambulance assignment, mail services |
+| Laboratory staff | Blood bank, diagnostic test reports, notices; payroll view where authorized |
+| Pharmacist | Medicine categories, inventory, prescriptions/bills, notices |
+| Accountant | Invoices, payments, payroll, financial accounts |
+| Administrator | Departments, users, roles, dashboards, billing, payroll, settings, notices, documents |
+| HR / Hiring team | Vacancies, candidate applications, interviews, status updates, offer tracking |
+| Publisher / Approver | Create, review, approve and publish notices or campaigns within assigned scope |
+| External coordination requester / approver | Create and approve requests, view provider availability, track fulfilment, maintain audit history |
+
+Rules: least privilege; **separate clinical and financial permissions**; clinical, financial, HR and candidate data are **segregated**; unauthorized actions are **denied and logged**.
+
+---
+
+## 3. SHARED END-TO-END PATIENT JOURNEY (§3) — must work as one connected flow
+
+| Stage | Inputs | Action | Output |
+|---|---|---|---|
+| Discover | Branch, specialty/service, doctor name | Search directory, show matching services/doctors | Results + profile |
+| Register | User ID, mobile, email, password, consent | Validate identity fields; verify mobile as configured; create account | Patient account + confirmation |
+| Book | Doctor, date, slot, visit type | Check availability; **hold slot during payment/confirmation**; prevent duplicate booking | Appointment reference + status |
+| Confirm / pay | Booking details, fee, payment method | Review policy; initiate secure payment | Payment result, receipt, confirmed booking |
+| Receive care | Appointment/admission, clinical observations | Care team records encounter, investigations, treatment | Clinical encounter + related records |
+| Access records | Patient identity, authorized record request | Apply access rules; show date/source/status | Reports, prescriptions, summaries |
+| Follow up | Reminder preference, follow-up plan | Send reminders; enable follow-up/refill next actions | Notifications + next appointment/request |
+
+**Cross-cutting controls to build as shared services:** identity verification, consent, role-based access, notifications, audit history, payment reconciliation.
+
+---
+
+## 4. PATIENT MOBILE APP (§4)
+
+For every module below implement: the inputs/validations, the numbered flow, the outputs, the business rules, and make each acceptance criterion an automated test.
+
+### 4.1 Home dashboard
+- **Inputs:** Patient/account ID (authenticated session; show only own data); Next appointment (doctor, time, status; hide if none); Pending bill / report alert (amount/due date or report-ready; deep-link to detail); Quick actions (Book appointment, lab test, medicines, pay bill, reports, emergency SOS).
+- **Flow:** authenticate & load profile/permissions → fetch upcoming appointment, outstanding balance, report notifications → render actionable cards + bottom navigation (**Home, Visits, Records, Payments**) → on selection open workflow **preserving context**.
+- **Outputs:** dashboard cards (appointment, bill, report status); navigation; in-app alerts (sample values clearly marked illustrative).
+- **Rules:** Emergency action always prominent, never obstructed by promotions; clear empty state when no appointment/bill/new report.
+- **Acceptance:** Patient sees only own information unless an authorized **dependent-profile** feature is enabled.
+
+### 4.2 Sign-in, registration, account recovery
+- **Inputs:** User ID/mobile (required, normalize + validate format); Password + confirm (required at registration, must match); Email (validate; used for updates/receipts as configured); OTP/verification code via SMS/email provider (**expiry, attempt limits, resend cooldown**); Consent (store consent **text, version, timestamp**).
+- **Flow:** choose Sign in / Create account / Forgot password → registration: user ID, mobile, email, password, review privacy notice/consent → verify mobile by OTP if enabled; validate uniqueness + password policy → create account, show confirmation, route to sign-in or home → recovery: verify identity via configured channel, set new password, **invalidate appropriate sessions**.
+- **Outputs:** account/authenticated session; success/failure message with retry path; password-reset confirmation with **no disclosure of whether an account exists**.
+- **Rules:** Recommended: OTP for registration/reset, staff MFA, biometric sign-in, session timeout, device management. Error messages must not expose sensitive account details.
+- **Acceptance:** Duplicate user IDs/mobiles handled without duplicate accounts; invalid, expired or reused OTPs rejected **and logged**.
+
+### 4.3 Find a doctor
+- **Inputs:** Hospital/branch (required where multiple); Specialty (filter against configured specialties); Doctor name (partial match); Filters (fee, day, home visit — only show supported filters/data); Doctor profile (photo, degrees/training, expertise, experience, working days, fee, rating where available).
+- **Flow:** open Find a doctor → select branch + specialty or enter name; optional filters → directory search with **pagination** → open profile, review, choose appointment action.
+- **Outputs:** doctor cards + pagination; profile with booking action; empty state with no-match message and option to change filters.
+- **Rules:** Never display unavailable/unverified profile attributes as confirmed.
+- **Acceptance:** Filters combine consistently; pagination never repeats or omits results.
+
+### 4.4 Appointment scheduling & confirmation
+- **Inputs:** Doctor/specialty (active & bookable); Date + time slot (available, within booking rules); Visit type (in-person/video only where enabled); Fee & policy (displayed before confirmation); Payment method (supported only; **never store raw card data**).
+- **Flow:** select doctor, view dates/slots → choose slot; system **rechecks availability and temporarily holds it during payment** → review doctor, branch, date/time, visit type, fee, cancellation/reschedule policy → confirm and initiate payment when required → process payment callback/result; **prevent duplicate booking; reconcile pending outcomes** → show appointment reference, receipt/status, add-to-calendar action; enable view/reschedule/cancel per policy.
+- **Outputs:** appointment status (**Confirmed / Pending payment / Failed-Cancelled**); unique booking ID; payment receipt when applicable; confirmation/reminder notifications to patient **and relevant staff**.
+- **Rules:** handle unavailable slots, payment failure/cancellation, duplicate submissions, **late callbacks**. Reschedule/cancellation windows and no-show rules are **admin-configurable** (need business confirmation).
+- **Acceptance:** A slot can never be double-booked (DB-level uniqueness/locking); patient always gets a clear final status and reference even if payment is pending.
+
+### 4.5 Medical records & health wallet
+- **Inputs:** Patient identity (secure match); Record category (All, prescriptions, lab, imaging, summaries); Record metadata (date, source, status, units); Download request (authorized PDF / secure download).
+- **Flow:** open Records, choose category/record → retrieve only authorized records for current access context → display source, date, status, units → secure PDF download where supported; **log access/download**.
+- **Outputs:** record list (prescriptions, lab reports, radiology, discharge summaries, vitals/allergies, encounter summaries); view/download document; report-ready notification where configured.
+- **Rules:** Recommended additions: allergy/chronic-condition history, family history, secure document upload. **Unreviewed results must never be presented as a diagnosis.**
+- **Acceptance:** Access is patient-scoped and audited; unavailable records show a clear status.
+
+### 4.6 Billing & payments
+- **Inputs:** Invoice/account (invoice ID, line items, due date, taxes/charges, balance); Payment method (UPI/card/net banking/wallet only if configured); Promo code (validate eligibility + expiry); Transaction response from gateway (success/pending/failure/cancellation).
+- **Flow:** open Payments, select invoice or account statement → review amount, due date, details, options → apply eligible promo, recalculate total → redirect/tokenize via approved provider, receive result → update payment ledger **idempotently**; reconcile gateway callback; generate receipt → PDF receipt and refund status where applicable.
+- **Outputs:** invoice view/statement; status (Paid/Pending/Failed/Cancelled); receipt with transaction reference + downloadable PDF; updated ledger + reconciliation record.
+- **Rules:** duplicate callbacks and retries handled idempotently; payment credentials stay with provider, **never store raw card data**; refund and reconciliation ownership are configurable (need confirmation).
+- **Acceptance:** Amount paid cannot exceed outstanding unless **advance payment** is explicitly enabled; every transaction has a unique reference and audit trail.
+
+### 4.7 Laboratory test booking
+- **Inputs:** Test/package (active, priced); Collection mode (at hospital or home if available); Date/slot (available for mode/branch); Patient/order details (required clinical/order details per test).
+- **Flow:** search/select test or package → choose collection mode, branch/address, slot → review instructions, price, details; pay if required → create lab order and notify lab/collection team → show order + report status; notify when report ready.
+- **Outputs:** lab order (reference, slot, status); operations queue entry for lab/collection team; report appears in Records when released.
+- **Rules:** home collection depends on serviceability + operational confirmation; report release/review workflow configurable (validate with lab stakeholders).
+- **Acceptance:** Unavailable slots cannot be booked and patient can pick another; status mirrors source system and **never implies clinical interpretation**.
+
+### 4.8 Pharmacy, prescriptions & refills
+- **Inputs:** Prescription (medicine, dosage, frequency, duration, prescriber); Refill request (subject to prescription validity + approval); Allergy information (display known allergies); Order/delivery details (only if pharmacy fulfilment enabled).
+- **Flow:** open Medicines, view prescriptions + dosage → review reminders if configured → request refill/order where enabled → pharmacy validates prescription, stock, eligibility → update request/order status, notify patient.
+- **Outputs:** prescription view; refill status (**Submitted / Pending / Approved / Rejected**); pharmacy review queue; allergy alert.
+- **Rules:** refills subject to pharmacist approval + policy; inventory/fulfilment features behind feature flags.
+- **Acceptance:** Patient **cannot alter prescribed dosage**; refill requests are traceable and reviewed.
+
+### 4.9 Emergency help & ambulance request
+- **Inputs:** Emergency type/callback (confirm callback number); Location (device or manual entry, permission-based); Patient context (minimum necessary data); Dispatch response (only statuses supplied by dispatch).
+- **Flow:** select Emergency SOS or Request ambulance → show **emergency call fallback** and clarify it's not a routine appointment → request location permission or accept manual location; confirm callback number → submit to configured dispatch workflow → show request reference and received/assigned status when available → notify patient and authorized case-management/dispatch users.
+- **Outputs:** emergency request (reference + details); dispatch queue entry; status (received/assigned/updated **only when confirmed by dispatch**).
+- **Rules:** clear emergency-call fallback; location sharing requires permission; **never claim dispatch/ETA without integration confirmation**.
+- **Acceptance:** Emergency request is visually distinct and accessible; if connection fails, immediate fallback instructions appear.
+
+---
+
+## 5. HOSPITAL STAFF PORTAL & CORE OPERATIONS (§5)
+
+### 5.1 Staff dashboard
+- **Inputs:** user role/branch (controls widgets + data scope); date/department filters (validate allowed range/scope); operational data from patient, appointment, bed, pharmacy, lab, billing, claims (show **source and refresh time**).
+- **Flow:** authenticate, resolve role/branch → load permitted KPIs + queues → apply filters, refresh → navigate to detail screens and authorized export.
+- **Outputs:** dashboard (patients, appointments, beds available, revenue, operational queues); alerts (bed occupancy, lab turnaround, pharmacy expiry, claims, exceptions); authorized report export.
+- **Rules:** sample values illustrative; clearly distinguish live / delayed / mock data.
+- **Acceptance:** users cannot view metrics outside assigned branch/role scope.
+
+### 5.2 Patient registration & front office
+- **Inputs:** demographics (required identity/contact fields; **duplicate matching**); visit details (department, doctor, visit type, reason as configured); contact/communication (consent, preferred channel).
+- **Flow:** search existing patient by approved identifiers → if none, capture demographics, create record → register visit, schedule or check in → route request to department, update status.
+- **Outputs:** unique Patient ID; appointment/check-in record; front-office queue with assigned request + status.
+- **Rules:** avoid duplicate records, provide **escalation path for uncertain matches**; restrict patient data by role.
+- **Acceptance:** required fields validated; every registration/change audited.
+
+### 5.3 Admissions, beds & discharge
+- **Inputs:** patient/admission (patient ID, reason, case); assessment (service/ward, care needs); bed request (VIP, AC, Non-AC or configured type); charges/advance; discharge data (summary, sign-offs, outstanding balance).
+- **Flow:** register admission, assess service/ward → check bed availability, allocate → record case manager + admission details, update occupancy → during stay record care and charges → complete clinical discharge summary and billing clearance/sign-off → release bed, **trigger cleaning task, update availability after readiness workflow**.
+- **Outputs:** admission record (Admission ID, ward/bed); bed board (occupied/available); discharge summary, bill, status; housekeeping cleaning task.
+- **Rules:** OT, ICU, emergency triage, nursing notes, shift handover = recommended extensions (build as optional modules/flags); bed readiness may depend on housekeeping inspection.
+- **Acceptance:** a bed cannot be assigned to overlapping active admissions; discharge/release auditable and availability updated consistently.
+
+### 5.4 Pharmacy inventory & billing
+- **Inputs:** medicine catalogue (category, brand, item, unit, price); inventory (quantity, batch, expiry); prescription (patient, medicine, dosage); dispensing/billing (quantity, charges).
+- **Flow:** maintain categories/brands/inventory → receive prescription or authorized sale → check stock + safety alerts → dispense, record quantity/batch, generate bill → update inventory + financial ledger; alert on low stock/expiry.
+- **Outputs:** inventory with movement history; patient-linked dispensing record; medicine invoice; low-stock/expiry alert queue.
+- **Rules:** expiry alerts and refill workflow recommended; inventory changes preserve traceability.
+- **Acceptance:** dispensing cannot exceed available stock without an **authorized exception**.
+
+### 5.5 Laboratory, radiology & diagnostics
+- **Inputs:** test order (patient, test, priority, clinical context); specimen/appointment (collection details, status); result (values, units, reference ranges, review status); imaging (images + report where PACS integrated).
+- **Flow:** receive + prioritize order → schedule/collect specimen or perform imaging → record result, validate/review per lab workflow → release to authorized patient/staff views → update turnaround metrics, notify patient.
+- **Outputs:** work queue (pending tests, collection tasks); reviewed/released report; patient record link (report + image); analytics (test status, turnaround).
+- **Rules:** analyzer/PACS integration recommended (needs technical discovery); clinical review + result-release rules configurable.
+- **Acceptance:** released reports show status, date, source, units where relevant.
+
+### 5.6 Blood bank
+- **Inputs:** stock item (group, component, unit, collection/expiry date, storage status); donor record (details, screening status); reservation/issue (patient/case, compatibility, authorized release); external availability (source, quantity, timestamp, confirmation, ETA).
+- **Flow:** maintain stock + donors; **flag outdated/unused stock** → receive request, check internal compatible inventory → if insufficient, search connected blood banks/hospitals, compare **confirmed** availability → obtain required approval; submit transfer/collection request → record provider confirmation, receipt, screening/compatibility checks, authorized issue → update stock/reservation/transfer records + audit.
+- **Outputs:** inventory by group/component/expiry; external request (provider reference, status, ETA); traceable issue/transfer with recipient/case; alerts (low stock, near-expiry, stockout).
+- **Rules:** compatibility, screening, authorized release follow approved hospital workflow; availability always shows **source + last-updated time**.
+- **Acceptance:** **no blood unit issued without required authorization and traceability.**
+
+### 5.7 Billing, finance, insurance & payroll
+- **Inputs:** charge/transaction (service, amount, patient/account, reference); payment/advance (method, amount, transaction ID, status); insurance case (policy, eligibility, pre-auth, documents, claim status); payroll inputs (staff, salary components, attendance, adjustments).
+- **Flow:** generate invoice from approved services/charges → record advance/payment, reconcile gateway or cashier transaction → maintain statements, income/expenses, authorized adjustments → insurance: verify policy, submit pre-auth/claim, track queries, approval, rejection, settlement → process payroll with authorized inputs; generate controlled reports.
+- **Outputs:** invoice/statement/due-received balances; payment ledger with references + reconciliation status; insurance claim timeline, outstanding amount, settlement; payslips/reports for authorized users.
+- **Rules:** separate clinical and financial permissions; audit history for all financial adjustments; insurer/TPA and payroll integrations validated separately.
+- **Acceptance:** all financial changes attributed and auditable; restricted data role-limited.
+
+---
+
+## 6. ENGAGEMENT & COMMUNICATION MODULES (§6)
+
+### 6.1 Careers & job portal
+- **Inputs:** vacancy (role, department, location, employment type, experience, opening/closing dates); candidate profile (contact, CV, certificates, professional registration if applicable); interview (schedule, interviewers, feedback); application status: **Submitted → Under Review → Shortlisted → Interview Scheduled → Selected / Not Selected**.
+- **Flow:** HR creates/edits vacancy → submits for approval/publication → candidate searches/filters, opens details → submits application + attachments, system generates reference → HR reviews, shortlists, schedules interview; interviewers record feedback → HR updates status, tracks offer/appointment letter → notify candidate via consented, configured channels; retain records per policy.
+- **Outputs:** published listing + closing status; application reference + status; recruitment pipeline + interview calendar; notifications.
+- **Rules:** optional employee referral, internships, training, fellowships; candidate data retention + hiring approvals configurable.
+- **Acceptance:** closed/expired vacancies cannot accept applications; status history retained.
+
+### 6.2 Announcements & notices
+- **Inputs:** content (title, body, category, attachments, priority); audience (all staff, role, department, branch, or patients); schedule (publish + expiry); approval (required for critical/emergency).
+- **Flow:** publisher drafts, selects audience/category/priority → submit for approval where required → approver approves / rejects / requests changes → publish to portal/app/notice board + send configured notifications → track delivery, views, acknowledgement; export report.
+- **Outputs:** published notice with expiry; push/email/SMS as configured; acknowledgement report (audience, delivery/view/ack status).
+- **Rules:** emergency broadcast restricted to authorized users. Categories: **General, Urgent, Clinical/Safety, HR, Training, Maintenance, Events, Patient Information**.
+- **Acceptance:** expired notices never shown as current; critical acknowledgements reportable.
+
+### 6.3 Advertisements & promotions
+- **Inputs:** campaign (title, description, banner, destination, audience, dates); offer terms (promo code, eligibility, validity, terms); approval (content + clinical claims review); analytics (impressions, clicks, enquiries, bookings).
+- **Flow:** create campaign with approved content/offer terms → select branch, audience, schedule; submit for approval → approver reviews; approved campaign published + scheduled → auto-stop at expiry or pause/cancel by authorized user → track privacy-conscious engagement metrics.
+- **Outputs:** approved published promotion; patient-app display **clearly labelled "Advertisement / Sponsored"**; performance report.
+- **Rules:** no misleading medical claims; never interfere with emergency/care workflows; avoid identifiable health data for ad targeting; apply consent/privacy rules.
+- **Acceptance:** only approved campaigns publish; expired campaigns stop automatically.
+
+---
+
+## 7. EXTERNAL COORDINATION MODULES (§7)
+
+**Shared request lifecycle (build as one reusable state machine):**
+`Draft → Submitted → Approval pending → Provider processing → Confirmed → Fulfilled → Closed`
+Exception states: `Rejected, Unavailable, Delayed, Cancelled, Escalated`.
+
+### 7.1 Dashboard & request management
+- **Inputs:** category (Blood, supplier, housekeeping, insurance, manpower); details (need, quantity/capacity, location, urgency, deadline, attachments); provider availability (API/portal/email/manual; source, last updated, quantity, ETA, confirmation); approval (role/value/urgency threshold).
+- **Flow:** authorized user creates request → unique request ID → system checks internal stock/roster + configured external sources → show options with source, freshness, location, quantity/capacity, confirmation → compare, obtain approvals → submit request/order/claim/task to provider, record provider reference → track response, ETA, exceptions, communication → record receipt/deployment/completion/outcome, update related module, close with audit.
+- **Outputs:** dashboard (open, awaiting approval, confirmed, exception counts); request record (timeline, attachments, approvals, communications); fulfilment outcome + updated inventory/roster/status.
+- **Rules:** label stale/unconfirmed availability; failed integrations create **visible exception + manual follow-up path**; prevent or flag duplicate submissions.
+- **Acceptance:** every request has unique ID, requester, category, priority, timestamps, status; search/filter by **branch, category, provider, owner, priority, status**.
+
+### 7.2 Supplier catalogue & purchase request
+- **Inputs:** item (category, specification, unit, quantity); delivery (branch/store, requested date); supplier (approval status, price list, availability, lead time, freshness); purchase request (budget/department, attachments); receipt (quantity, batch/serial, quality check, discrepancy).
+- **Flow:** search item/category + delivery location → compare approved suppliers (price, stock, lead time, verification) → add item/quantity, submit purchase request → budget/department approval, create PO → track dispatch/delivery; receive goods + quality check → record returns/warranty/service requests; **match invoice and payment (3-way match)**.
+- **Outputs:** PR/PO IDs, supplier, approved amount; dispatch/ETA + goods receipt; stock updated after accepted receipt; matched invoice/payment status.
+- **Rules:** if real-time vendor integration unavailable, support portal/email/manual confirmation; keep supplier performance + issue history.
+- **Acceptance:** PO cannot be submitted without required approval; receipt discrepancies recorded.
+
+### 7.3 Cleaning & housekeeping
+- **Inputs:** task (location, type, priority, checklist); assignment (staff/agency, shift, roster); execution (start/end, checklist, notes); inspection (pass/fail, sign-off or reopen reason).
+- **Flow:** create task by ward/room/theatre/department + priority → assign staff/agency + shift, notify → staff marks In Progress, records checklist/timestamps → mark Completed, submit for inspection → supervisor inspects; **pass → room/bed Ready; fail → reopen/escalate** → notify front office/nursing; retain audit.
+- **Outputs:** task board (**Assigned, In Progress, Awaiting Inspection, Completed, Reopened**); room readiness; audit (checklist, timestamps, assignee, supervisor sign-off).
+- **Rules:** missed tasks escalate per priority/SLA; shift handover and maintenance requests where configured.
+- **Acceptance:** room cannot be marked Ready before required inspection passes.
+
+### 7.4 Insurance / TPA pre-authorisation & claims
+- **Inputs:** patient/admission ID; insurer/TPA + policy (member ID, coverage, eligibility); estimate + documents (clinical notes, reports); claim timeline (reference, query, approval/rejection, settlement).
+- **Flow:** select patient/admission + insurer/TPA → verify policy/eligibility, record result/reference → prepare pre-auth with estimate + documents → submit via API/portal or controlled manual process → track query, assign owner, upload response, resubmit → submit final claim; track approval/rejection/settlement; notify billing + case manager.
+- **Outputs:** insurance case (verified policy, auth status); claim timeline (submission, query, response, settlement); billing updates (approved coverage, patient responsibility, outstanding).
+- **Rules:** sensitive clinical/insurance data to authorized roles only; keep insurer reference, documents, response dates, query owner, audit history.
+- **Acceptance:** every claim event timestamped and attributable; query ownership visible.
+
+### 7.5 Manpower & staffing agency
+- **Inputs:** staffing need (role, headcount, location, shift, duration, urgency, qualifications); agency (availability, quote, service area); credential checks (licences, qualifications, verification status); deployment (roster, attendance, replacement, timesheet, invoice).
+- **Flow:** create request, check approved agency availability → compare candidate/agency response + quote → approval; verify credentials/onboarding → confirm deployment, create roster → track attendance, shift handover, replacements → approve timesheet, reconcile agency invoice.
+- **Outputs:** request ID/status; verified personnel, roster, attendance; timesheet/invoice review record.
+- **Rules:** clinical duties only for qualified, credential-verified personnel; retain approvals + deployment history.
+- **Acceptance:** no clinical deployment before required credential checks and approvals.
+
+### 7.6 Centralized availability & coordination
+- **Inputs:** resource (stock, service, staff, capacity); provider metadata (source, location, last-updated, response/lead time); request (need, quantity, priority, destination); confirmation (Confirmed / Partial / Unavailable + ETA).
+- **Flow:** check internal inventory/roster **first** → query providers via API/webhook or fallback portal/email/phone → normalize + display options with source, timestamp, capacity, location, confirmation → compare, approvals → submit, track confirmation/fulfilment → update stock, room readiness, claim or roster records + audit.
+- **Outputs:** cross-provider availability view with freshness + confirmation labels; request tracking (status, provider ref, ETA, exceptions); operational updates.
+- **Rules:** **never present stale or unconfirmed data as live**; availability depends on provider agreements/technical capability.
+- **Acceptance:** each result identifies source and last update; stale data visibly flagged.
+
+---
+
+## 8. ADMIN, REPORTING, SECURITY, INTEGRATIONS (§8)
+
+### 8.1 Administration & RBAC
+- **Inputs:** user/staff profile (identity, department, branch, status); role/permission (module/action/data scope); configuration (departments, service catalogue, fees, settings, workflow thresholds); approval policy (approver, threshold, escalation).
+- **Flow:** create/update user, assign branch/department → assign role + least-privilege permissions → configure module settings + approval rules → periodic access review; deactivate when no longer required.
+- **Outputs:** effective access profile; updated reference data/workflow rules; audit (user, action, timestamp, change details).
+- **Rules:** staff/admin MFA; controlled exports + retention; clinical/financial/HR/candidate data segregated.
+- **Acceptance:** unauthorized actions denied and logged; access changes auditable.
+
+### 8.2 Reports & analytics
+- **Inputs:** report type (operations, clinical services, finance, pharmacy, recruitment, engagement); filters (date, branch, department, category, status); data sources (source + refresh timestamp); export (PDF; Excel/CSV where enabled).
+- **Flow:** select report + filters → validate user scope, retrieve → display with data freshness + definitions → export authorized results, **log export**.
+- **Outputs:** Operations (occupancy, length of stay, OPD/IPD, emergency, surgery counts); Clinical (doctor/department performance, lab turnaround, report status); Finance (revenue, collections, dues, expenses, claims/rejections); Inventory (stock, expiry, low stock, fast-moving); Recruitment/engagement (vacancies, pipeline, notice reach/ack, campaign metrics).
+- **Rules:** dashboards distinguish live vs sample/mock; exports follow role permissions + privacy.
+- **Acceptance:** filters apply consistently; exported data equals displayed authorized results.
+
+### 8.3 Security, privacy, clinical safeguards
+- **Inputs:** authentication (OTP/SMS, password reset, staff/admin MFA); session/device (timeout, auto-logout, device management); data (encryption in transit + at rest, backups, DR); consent (text/version, purpose, timestamp); audit events (record views, create/update/delete, clinical/financial changes).
+- **Flow:** authenticate + authorize every request by role and workflow context → encryption, session controls, secure document handling → capture consent, enforce purpose/access rules → log sensitive access/changes; monitor/review → retention, backup, recovery procedures.
+- **Outputs:** access decisions, audit records, alerts; consent + data-access history; backup/restore + DR capability.
+- **Rules:** align with DPDP Act (India) / HIPAA (US) where applicable — make compliance controls configurable and flag for legal validation; emergency workflows always accessible; promotions never obstruct care.
+- **Acceptance:** sensitive actions auditable; unauthorized access blocked; **recovery procedures tested** (include a restore test script).
+
+### 8.4 Integrations & interoperability
+- **Adapters (each with interface + mock implementation + manual fallback):** Payment gateway (payment, refund, receipt, reconciliation); Messaging SMS/email/WhatsApp (templates, recipient consent, delivery status); Insurance/schemes — Insurer/TPA/ABDM (eligibility, pre-auth, claim, status); Diagnostics — Analyzer/PACS/DICOM (orders, results, images); Health interoperability HL7/FHIR (mapped clinical data + identity); Location/devices — Maps, ambulance dispatch, wearables (permissioned); External providers (API/webhook/portal/manual).
+- **Flow:** confirm scope/agreement/credentials/data mapping → exchange via approved secure interface → validate response, update module **idempotently** → log errors, retry where safe, manual fallback → monitor freshness, availability, ownership, support SLA.
+- **Outputs:** updated source module with provider references; **visible failed/pending integration queue**; monitoring (status, latency, freshness, audit logs).
+- **Acceptance:** integration failure is visible and **never silently loses or duplicates transactions** (use outbox pattern, idempotency keys, dead-letter queue).
+
+---
+
+## 9. RELEASE ROADMAP — build in this order
+
+- **Phase 1 – Core/MVP:** login + role access; appointments; patient registration + records; billing/payments; pharmacy; laboratory; bed management; patient-app booking/payment.
+- **Phase 2 – Engagement:** push notifications; OTP/biometric login; family profiles; report downloads; feedback; telemedicine; medicine reminders; online lab booking.
+- **Phase 3 – Scale:** multi-branch; insurance/TPA + ABDM integration; HL7/FHIR; advanced analytics + AI features.
+- **Prioritization note:** Careers, Announcements, Promotions and External Coordination are scheduled by readiness, approvals, privacy review and budget — build them behind **feature flags** after Phase 1.
+
+---
+
+## 10. CONFIGURABLE ITEMS (open decisions — do NOT hard-code; expose in Admin settings with defaults + seed data)
+
+1. Hospital branding, branch list, specialties, service catalogue, doctor directory, consultation fees.
+2. Appointment slot duration, cancellation/reschedule windows, no-show handling, payment timing.
+3. Patient identity matching rules, dependent profiles, consent wording, record-sharing permissions.
+4. Payment gateway, refund process, invoice numbering, tax treatment, reconciliation ownership.
+5. Clinical workflows: lab approval/result release, prescription controls, emergency dispatch integration, discharge sign-off.
+6. Careers: hiring approvers, candidate data retention, interview process, notification channels.
+7. Announcements: audience ownership, urgent broadcast permissions, acknowledgement policy, expiry.
+8. Advertisements: content policy, clinical-claims review, campaign ownership, privacy-safe analytics.
+9. External integrations: vendors, API availability, licensing, data mapping, SLAs, support ownership.
+
+Where the spec didn't define a rule, owner, threshold, SLA or integration behavior, treat it as **"to confirm"** — implement a configurable default and list it in a `ASSUMPTIONS.md`.
+
+---
+
+## 11. NON-NEGOTIABLE CROSS-CUTTING REQUIREMENTS (checklist)
+
+- [ ] Every create/update/delete and every sensitive view is audit-logged (user, action, timestamp, before/after).
+- [ ] Patient data strictly scoped to the patient (or authorized dependent); staff data scoped by role + branch.
+- [ ] No raw card data stored; gateway tokenization/redirect only; idempotent callbacks; unique transaction references.
+- [ ] No double-booking of slots; no overlapping bed assignments; no dispensing above stock without authorized exception; no blood issue without authorization; no clinical staffing deployment before credential checks; no Ready room before inspection pass; no PO without approval; closed/expired vacancies reject applications; expired notices/campaigns auto-stop.
+- [ ] Unreviewed results never shown as diagnosis; lab status doesn't imply interpretation; dispatch status/ETA shown only when confirmed by dispatch.
+- [ ] Stale/unconfirmed external data is always labelled; never shown as live.
+- [ ] Error messages never leak whether an account exists or expose sensitive details.
+- [ ] Emergency SOS always prominent, accessible, with call fallback, never obstructed by ads.
+- [ ] Sample/mock values labelled; dashboards show live vs delayed vs mock.
+- [ ] Empty states, loading states, error states, pagination on all lists.
+- [ ] Notifications (push/email/SMS/in-app) via templates, honoring consent and preferred channel.
+- [ ] Accessibility, localization-ready strings, responsive layouts.
+
+---
+
+## 12. DELIVERABLES
+
+1. `ARCHITECTURE.md` (components, data flow, deployment), ERD, OpenAPI spec, state-machine diagrams (appointment, payment, admission/bed, lab order, refill, blood request, claim, external request lifecycle, housekeeping task, application status, notice/campaign approval).
+2. Working code: backend, staff portal, patient app, workers, integration adapters (mock + interface).
+3. DB migrations + seed data (sample branches, specialties, doctors, tests, medicines, roles, users) clearly flagged as sample.
+4. Automated tests: unit, API, and E2E — **one test per acceptance criterion listed above**; concurrency tests for slot booking, bed assignment, stock, idempotent payment callbacks.
+5. `ASSUMPTIONS.md`, `README.md` (setup, env vars, run, test), role–permission matrix, audit-event catalogue.
+6. Phase-by-phase demo script walking the end-to-end patient journey (§3).
+
+Begin with Step 1: the architecture, ERD, state machines, API surface and Phase-1 task breakdown. Ask me only about decisions that cannot be defaulted; otherwise proceed and record assumptions.

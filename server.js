@@ -66,6 +66,17 @@ export function createHmsApp(options = {}) {
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.on('finish', () => {
+      if (res.statusCode === 403 && req.user && (req.originalUrl || req.path || '').startsWith('/api/')) {
+        try {
+          db.run(
+            `INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, details, ip_address)
+             VALUES (?, ?, 'authz.denied', 'route', ?, ?, ?)`,
+            [req.user.id, req.user.role, req.originalUrl || req.path, JSON.stringify({ method: req.method, path: req.originalUrl }), req.ip || '127.0.0.1']
+          );
+        } catch {}
+      }
+    });
     next();
   });
   app.use(csrfProtect);

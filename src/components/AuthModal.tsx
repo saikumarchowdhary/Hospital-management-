@@ -1,16 +1,35 @@
 import React, { useEffect, useState } from 'react';
-import { X, AlertCircle, CheckCircle2, KeyRound, ShieldCheck } from 'lucide-react';
+import {
+  X,
+  AlertCircle,
+  CheckCircle2,
+  KeyRound,
+  ShieldCheck,
+  Eye,
+  EyeOff,
+  User,
+  Stethoscope,
+  Shield,
+  Briefcase,
+  Megaphone,
+  ClipboardCheck,
+  Lock,
+} from 'lucide-react';
 import { apiRequest, setAccessToken } from '../lib/api';
 
 const CONSENT_VERSION = 'v2.0';
 const CONSENT_TEXT =
   'I consent to MediCore HMS storing and processing my personal identity, care records, and appointments under hospital privacy safeguards.';
 
+export type LoginPortalType = 'patient' | 'staff' | 'admin' | 'hr_publisher';
+export type HrPubSubRole = 'hr' | 'publisher' | 'approver';
+
 interface AuthModalProps {
   open: boolean;
   canClose: boolean;
   needsSetup: boolean;
   demoAccounts: any[];
+  initialPortal?: LoginPortalType;
   onClose: () => void;
   onAuthenticated: (user: any, message: string) => void;
   onSetupComplete: () => void;
@@ -21,21 +40,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   canClose,
   needsSetup,
   demoAccounts,
+  initialPortal = 'patient',
   onClose,
   onAuthenticated,
   onSetupComplete,
 }) => {
   const [tab, setTab] = useState<'login' | 'register' | 'forgot'>('login');
+  const [portal, setPortal] = useState<LoginPortalType>(initialPortal);
+  const [patientSubRole, setPatientSubRole] = useState<'patient' | 'candidate'>('patient');
+  const [hrPubRole, setHrPubRole] = useState<HrPubSubRole>('hr');
+
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // First-run setup
   const [setupForm, setSetupForm] = useState({ full_name: '', email: '', mobile: '', password: '', confirm: '' });
+  const [showSetupPass, setShowSetupPass] = useState(false);
 
   // Login
   const [loginId, setLoginId] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPass, setShowLoginPass] = useState(false);
   const [remember, setRemember] = useState(true);
 
   // Forgot password
@@ -43,6 +69,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [forgotStage2, setForgotStage2] = useState(false);
   const [resetCode, setResetCode] = useState('');
   const [resetNewPass, setResetNewPass] = useState('');
+  const [showResetPass, setShowResetPass] = useState(false);
 
   // Unified Sign-Up
   const [regMeta, setRegMeta] = useState<{ staffRoles: any[]; departments: any[]; branches: any[]; specialties: any[] }>({
@@ -52,6 +79,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     specialties: [],
   });
   const [accountType, setAccountType] = useState<'patient' | 'candidate' | 'doctor' | 'staff'>('patient');
+  const [showRegPass, setShowRegPass] = useState(false);
   const [reg, setReg] = useState({
     full_name: '',
     email: '',
@@ -84,6 +112,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [otpCode, setOtpCode] = useState('');
   const [otpVerified, setOtpVerified] = useState(false);
   const [otpHint, setOtpHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPortal(initialPortal);
+  }, [initialPortal]);
 
   useEffect(() => {
     if (!open || needsSetup) return;
@@ -144,9 +176,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSuccessMsg(null);
     setBusy(true);
     try {
+      const payload: Record<string, any> = {
+        identifier: loginId.trim(),
+        password: loginPassword,
+        remember,
+        expected_portal: portal,
+      };
+      if (portal === 'patient') {
+        payload.expected_role = patientSubRole;
+      } else if (portal === 'admin') {
+        payload.expected_role = 'admin';
+      } else if (portal === 'hr_publisher') {
+        payload.expected_role = hrPubRole;
+      }
+
       const res = await apiRequest('/api/auth/login', {
         method: 'POST',
-        body: { identifier: loginId.trim(), password: loginPassword, remember },
+        body: payload,
       });
       setAccessToken(res.token || res.accessToken);
       onAuthenticated(res.user, `Signed in as ${res.user.full_name} (${res.user.role_name}).`);
@@ -330,16 +376,49 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
+  const PORTAL_CARDS: Array<{ id: LoginPortalType; title: string; subtitle: string; icon: any; accent: string }> = [
+    { id: 'patient', title: 'Patient Login', subtitle: 'Patient EHR & Careers', icon: User, accent: 'text-blue-600 bg-blue-50 border-blue-200' },
+    { id: 'staff', title: 'Hospital Staff Login', subtitle: 'Doctors, Nurses & Clinical Ops', icon: Stethoscope, accent: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
+    { id: 'admin', title: 'Administrator Login', subtitle: 'System Governance & RBAC', icon: Shield, accent: 'text-slate-900 bg-slate-100 border-slate-300' },
+    { id: 'hr_publisher', title: 'HR / Publisher Login', subtitle: 'HR, Publisher & Approver', icon: Briefcase, accent: 'text-indigo-600 bg-indigo-50 border-indigo-200' },
+  ];
+
+  const portalHeading =
+    portal === 'admin'
+      ? 'Administrator Secure Login'
+      : portal === 'hr_publisher'
+      ? hrPubRole === 'hr'
+        ? 'HR / Hiring Team Login'
+        : hrPubRole === 'publisher'
+        ? 'Publisher Login'
+        : 'Approver Login'
+      : portal === 'staff'
+      ? 'Hospital Staff Portal Login'
+      : patientSubRole === 'candidate'
+      ? 'Candidate Careers Login'
+      : 'Patient Portal Login';
+
+  const identifierPlaceholder =
+    portal === 'admin'
+      ? 'Admin ID or Administrator Email'
+      : portal === 'hr_publisher'
+      ? `${hrPubRole.toUpperCase()} ID or Work Email`
+      : portal === 'staff'
+      ? 'Employee / Staff ID or Work Email'
+      : patientSubRole === 'candidate'
+      ? 'Candidate ID or Email'
+      : 'Patient ID (PT-...) or Email';
+
   return (
     <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-xl max-w-xl w-full p-6 border border-slate-100 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full p-6 border border-slate-100 space-y-4 my-8 max-h-[94vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="font-bold text-lg text-slate-900">
               {needsSetup
                 ? 'Initial Hospital Administrator Setup'
                 : tab === 'login'
-                ? 'Sign In to MediCore HMS'
+                ? portalHeading
                 : tab === 'register'
                 ? 'Create Your Account'
                 : 'Reset Password'}
@@ -347,7 +426,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <p className="text-xs text-slate-500">
               {needsSetup
                 ? 'Create the first Administrator account to initialize your hospital instance'
-                : 'Shared multi-user hospital workspace with server-enforced roles'}
+                : 'Role-protected hospital access with four dedicated entry portals'}
             </p>
           </div>
           {canClose && (
@@ -370,7 +449,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 tab === 'login' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'
               }`}
             >
-              Sign In
+              Portal Sign In
             </button>
             <button
               type="button"
@@ -425,18 +504,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
             />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="relative">
+                <input
+                  required
+                  type={showSetupPass ? 'text' : 'password'}
+                  minLength={8}
+                  value={setupForm.password}
+                  onChange={(e) => setSetupForm({ ...setupForm, password: e.target.value })}
+                  placeholder="Password (8+ chars, 1 number)"
+                  className="w-full pl-3.5 pr-9 py-2.5 bg-slate-100 rounded-xl text-sm"
+                />
+                <button type="button" onClick={() => setShowSetupPass(!showSetupPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                  {showSetupPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
               <input
                 required
-                type="password"
-                minLength={8}
-                value={setupForm.password}
-                onChange={(e) => setSetupForm({ ...setupForm, password: e.target.value })}
-                placeholder="Password (8+ chars, 1 number)"
-                className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
-              <input
-                required
-                type="password"
+                type={showSetupPass ? 'text' : 'password'}
                 minLength={8}
                 value={setupForm.confirm}
                 onChange={(e) => setSetupForm({ ...setupForm, confirm: e.target.value })}
@@ -450,26 +534,146 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </form>
         ) : tab === 'login' ? (
           <>
+            {/* 4 Clear Login Entry Points */}
+            <div>
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                Select Login Portal
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {PORTAL_CARDS.map((card) => {
+                  const Icon = card.icon;
+                  const active = portal === card.id;
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      data-testid={`portal-${card.id}`}
+                      onClick={() => {
+                        setPortal(card.id);
+                        setErrorMsg(null);
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        active
+                          ? 'border-blue-600 bg-blue-50/70 ring-2 ring-blue-600/20'
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center mb-1.5 border ${card.accent}`}>
+                        <Icon className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="font-bold text-xs text-slate-900 leading-tight">{card.title}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5 leading-tight">{card.subtitle}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {portal === 'patient' && (
+              <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setPatientSubRole('patient')}
+                  className={`flex-1 py-1.5 rounded-lg font-semibold ${
+                    patientSubRole === 'patient' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'
+                  }`}
+                >
+                  Patient Account
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPatientSubRole('candidate')}
+                  className={`flex-1 py-1.5 rounded-lg font-semibold ${
+                    patientSubRole === 'candidate' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'
+                  }`}
+                >
+                  Job Applicant / Candidate
+                </button>
+              </div>
+            )}
+
+            {portal === 'hr_publisher' && (
+              <div className="p-2.5 bg-indigo-50/60 border border-indigo-200 rounded-xl space-y-1.5">
+                <p className="text-[11px] font-semibold text-indigo-900">Select HR / Publisher Department Role:</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'hr', label: 'HR / Hiring Team', icon: Briefcase },
+                    { id: 'publisher', label: 'Publisher', icon: Megaphone },
+                    { id: 'approver', label: 'Approver', icon: ClipboardCheck },
+                  ].map((sub) => {
+                    const SubIcon = sub.icon;
+                    const active = hrPubRole === sub.id;
+                    return (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        data-testid={`subrole-${sub.id}`}
+                        onClick={() => {
+                          setHrPubRole(sub.id as HrPubSubRole);
+                          setErrorMsg(null);
+                        }}
+                        className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-semibold border transition-all ${
+                          active
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-indigo-50'
+                        }`}
+                      >
+                        <SubIcon className="w-3.5 h-3.5" />
+                        <span className="truncate">{sub.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {portal === 'admin' && (
+              <div className="p-2.5 bg-slate-900 text-white rounded-xl flex items-center gap-2.5 text-xs">
+                <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  <strong>Restricted Administrator Entry:</strong> Only authorized Hospital Administrators may authenticate here. All attempts are audit-logged.
+                </span>
+              </div>
+            )}
+
             <form onSubmit={submitLogin} className="space-y-3">
-              <input
-                required
-                value={loginId}
-                onChange={(e) => setLoginId(e.target.value)}
-                placeholder="Email or User / Patient ID"
-                className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
-              <input
-                required
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="Password"
-                className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  {portal === 'admin' ? 'Admin ID / Email' : 'Email or User ID'}
+                </label>
+                <input
+                  required
+                  value={loginId}
+                  onChange={(e) => setLoginId(e.target.value)}
+                  placeholder={identifierPlaceholder}
+                  className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Password</label>
+                <div className="relative">
+                  <input
+                    required
+                    type={showLoginPass ? 'text' : 'password'}
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    className="w-full pl-3.5 pr-10 py-2.5 bg-slate-100 rounded-xl text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPass(!showLoginPass)}
+                    aria-label={showLoginPass ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700"
+                  >
+                    {showLoginPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
               <div className="flex items-center justify-between text-xs">
                 <label className="flex items-center gap-2 text-slate-600 cursor-pointer">
                   <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-                  Remember session
+                  Remember Me
                 </label>
                 <button
                   type="button"
@@ -480,19 +684,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   }}
                   className="text-blue-600 font-semibold hover:underline"
                 >
-                  Forgot password?
+                  Forgot Password?
                 </button>
               </div>
-              <button disabled={busy} type="submit" className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl">
-                {busy ? 'Signing in...' : 'Sign In'}
+              <button
+                disabled={busy}
+                type="submit"
+                className={`w-full py-2.5 font-semibold text-sm rounded-xl text-white flex items-center justify-center gap-2 ${
+                  portal === 'admin'
+                    ? 'bg-slate-900 hover:bg-slate-800'
+                    : portal === 'hr_publisher'
+                    ? 'bg-indigo-600 hover:bg-indigo-700'
+                    : 'bg-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                {portal === 'admin' && <Lock className="w-4 h-4" />}
+                <span>{busy ? 'Authenticating...' : portal === 'admin' ? 'Secure Login' : 'Sign In'}</span>
               </button>
             </form>
 
             {demoAccounts.length > 0 && (
               <div className="pt-3 border-t border-slate-100">
-                <p className="text-[11px] font-semibold text-slate-500 mb-2">Quick Portal Sign-In (Local/Staging Demo Mode)</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto">
-                  {demoAccounts.slice(0, 15).map((acc) => (
+                <p className="text-[11px] font-semibold text-slate-500 mb-2">Quick Portal Sign-In (Staging/Demo Mode)</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
+                  {demoAccounts.slice(0, 18).map((acc) => (
                     <button
                       key={acc.email}
                       type="button"
@@ -547,15 +762,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   placeholder="6-digit Reset Code"
                   className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
                 />
-                <input
-                  required
-                  type="password"
-                  minLength={8}
-                  value={resetNewPass}
-                  onChange={(e) => setResetNewPass(e.target.value)}
-                  placeholder="New Password (8+ chars, 1 number)"
-                  className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-                />
+                <div className="relative">
+                  <input
+                    required
+                    type={showResetPass ? 'text' : 'password'}
+                    minLength={8}
+                    value={resetNewPass}
+                    onChange={(e) => setResetNewPass(e.target.value)}
+                    placeholder="New Password (8+ chars, 1 number)"
+                    className="w-full pl-3.5 pr-10 py-2.5 bg-slate-100 rounded-xl text-sm"
+                  />
+                  <button type="button" onClick={() => setShowResetPass(!showResetPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                    {showResetPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
                 <button type="submit" className="w-full py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-semibold">
                   Update Password
                 </button>
@@ -763,18 +983,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="relative">
+                <input
+                  required
+                  type={showRegPass ? 'text' : 'password'}
+                  minLength={8}
+                  value={reg.password}
+                  onChange={(e) => setReg({ ...reg, password: e.target.value })}
+                  placeholder="Password (8+ chars, 1 number)"
+                  className="w-full pl-3.5 pr-9 py-2.5 bg-slate-100 rounded-xl text-sm"
+                />
+                <button type="button" onClick={() => setShowRegPass(!showRegPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                  {showRegPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
               <input
                 required
-                type="password"
-                minLength={8}
-                value={reg.password}
-                onChange={(e) => setReg({ ...reg, password: e.target.value })}
-                placeholder="Password (8+ chars, 1 number)"
-                className="px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
-              <input
-                required
-                type="password"
+                type={showRegPass ? 'text' : 'password'}
                 minLength={8}
                 value={reg.confirm}
                 onChange={(e) => setReg({ ...reg, confirm: e.target.value })}

@@ -58,10 +58,14 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
       [pid]
     );
     const announcements = db.all(
-      `SELECT id, title, body, priority, start_date, expiry_date FROM announcements WHERE status = 'Published' ORDER BY id DESC LIMIT 3`
+      `SELECT id, title, body, priority, category, start_date, expiry_date FROM announcements
+       WHERE status = 'Published' AND date(start_date) <= date('now') AND date(expiry_date) >= date('now')
+       ORDER BY id DESC LIMIT 5`
     );
     const campaigns = db.all(
-      `SELECT id, name, description, destination_url, offer_terms, is_sponsored FROM campaigns WHERE status = 'Published' AND audience IN ('Patients','All') ORDER BY id DESC LIMIT 2`
+      `SELECT id, name, description, destination_url, offer_terms, banner_attachment_id, is_sponsored FROM campaigns
+       WHERE status = 'Published' AND audience IN ('Patients','All') AND date(start_date) <= date('now') AND date(end_date) >= date('now')
+       ORDER BY id DESC LIMIT 3`
     );
     const emergencies = db.all('SELECT * FROM emergency_requests WHERE patient_id = ? ORDER BY id DESC LIMIT 3', [pid]);
 

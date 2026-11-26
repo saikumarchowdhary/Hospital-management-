@@ -2,6 +2,10 @@ export function getAdminDashboardStats(db) {
   const totalPatients = db.get('SELECT COUNT(*) as c FROM patient_profiles').c;
   const totalDoctors = db.get('SELECT COUNT(*) as c FROM doctor_profiles WHERE is_active = 1').c;
   const totalStaff = db.get('SELECT COUNT(*) as c FROM employee_profiles WHERE employment_status = ?', ['Active']).c;
+  const totalEmployees = db.get('SELECT COUNT(*) as c FROM employee_profiles').c;
+  const totalUsers = db.get('SELECT COUNT(*) as c FROM users').c;
+  const totalDepartments = db.get('SELECT COUNT(*) as c FROM departments WHERE is_active = 1').c;
+  const totalAppointments = db.get('SELECT COUNT(*) as c FROM appointments').c;
   const todaysAppointments = db.get('SELECT COUNT(*) as c FROM appointments WHERE appointment_date = date(\'now\')').c;
   const activeAdmissions = db.get(`SELECT COUNT(*) as c FROM admissions WHERE status IN ('Admitted','Active Care','Discharge Pending')`).c;
   const availableBeds = db.get('SELECT COUNT(*) as c FROM beds WHERE status = ?', ['Available']).c;
@@ -11,7 +15,11 @@ export function getAdminDashboardStats(db) {
     `SELECT COUNT(*) as c FROM medicines m JOIN pharmacy_inventory pi ON pi.medicine_id = m.id WHERE pi.total_quantity <= m.reorder_level`
   ).c;
   const outstandingPayments = db.get(`SELECT COALESCE(SUM(balance_due), 0) as s FROM invoices WHERE status IN ('Pending','Processing')`).s;
+  const totalRevenue = db.get(`SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE status = 'Paid'`).s;
   const todaysRevenue = db.get(`SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE date(paid_at) = date('now') AND status = 'Paid'`).s;
+  const systemNotifications = db.get(`SELECT COUNT(*) as c FROM notifications`).c;
+  const pendingNoticeApprovals = db.get(`SELECT COUNT(*) as c FROM announcements WHERE status IN ('Submitted','Pending Approval','Under Review')`).c;
+  const pendingCampaignApprovals = db.get(`SELECT COUNT(*) as c FROM campaigns WHERE status IN ('Submitted','Pending Approval','Under Review')`).c;
 
   const appointmentsByStatus = db.all('SELECT status as label, COUNT(*) as value FROM appointments GROUP BY status');
   const deptPerformance = db.all(
@@ -58,6 +66,11 @@ export function getAdminDashboardStats(db) {
       totalPatients,
       totalDoctors,
       totalStaff,
+      activeStaff: totalStaff,
+      totalEmployees,
+      totalUsers,
+      totalDepartments,
+      totalAppointments,
       todaysAppointments,
       activeAdmissions,
       availableBeds,
@@ -65,7 +78,11 @@ export function getAdminDashboardStats(db) {
       pendingLabs,
       lowStockMeds,
       outstandingPayments: Number(outstandingPayments.toFixed(2)),
-      todaysRevenue: Number(todaysRevenue.toFixed(2))
+      pendingPayments: Number(outstandingPayments.toFixed(2)),
+      totalRevenue: Number(totalRevenue.toFixed(2)),
+      todaysRevenue: Number(todaysRevenue.toFixed(2)),
+      systemNotifications,
+      pendingApprovalsCount: pendingNoticeApprovals + pendingCampaignApprovals
     },
     charts: {
       appointmentsByStatus,

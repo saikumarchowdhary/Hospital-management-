@@ -4,10 +4,11 @@ import express from 'express';
 import fs from 'node:fs';
 import { body } from 'express-validator';
 import { AppError, asyncHandler } from '../middleware/errors.js';
-import { requireRole } from '../middleware/roles.js';
+import { canAccessClinicalRecord, requireRole } from '../middleware/roles.js';
 import { resolveSafeUploadPath } from '../middleware/uploads.js';
 import { isStrongPassword, validateRequest } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
+import { getAdminDashboardStats } from '../services/reports.js';
 import { registerAdminMembersRoutes } from './admin_members.js';
 import { registerAdminSignupsRoutes } from './admin_signups.js';
 
@@ -18,13 +19,58 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
   router.get('/attachments/:id', asyncHandler(async (req, res) => {
     const att = db.get('SELECT * FROM attachments WHERE id = ?', [Number(req.params.id)]);
     if (!att) throw new AppError(404, 'Document not found.');
-    if (req.user.role === 'patient' && att.owner_user_id !== req.user.id) {
-      const lab = db.get('SELECT lo.patient_id FROM lab_results lr JOIN lab_orders lo ON lo.id = lr.order_id WHERE lr.attachment_id = ? AND lo.status = \'Released\'', [att.id]);
-      const rad = db.get('SELECT ro.patient_id FROM radiology_reports rr JOIN radiology_orders ro ON ro.id = rr.order_id WHERE rr.attachment_id = ? AND ro.status = \'Released\'', [att.id]);
-      const doc = db.get('SELECT patient_id FROM documents WHERE attachment_id = ? AND patient_id = ?', [att.id, req.user.patient_id]);
-      const owns = (lab && lab.patient_id === req.user.patient_id) || (rad && rad.patient_id === req.user.patient_id) || Boolean(doc);
-      if (!owns) throw new AppError(403, 'Not authorized to access this document.');
+
+    const role = req.user.role;
+    const isAdmin = role === 'admin';
+    const isOwner = att.owner_user_id === req.user.id;
+    let allowed = isAdmin || isOwner;
+
+    if (!allowed) {
+      if (['recruitment', 'candidate_documents'].includes(att.module)) {
+        allowed = role === 'hr';
+      } else if (att.module === 'offers') {
+        if (role === 'hr') allowed = true;
+        else {
+          const ownOffer = db.get('SELECT id FROM offers WHERE letter_attachment_id = ? AND candidate_user_id = ?', [att.id, req.user.id]);
+          allowed = Boolean(ownOffer);
+        }
+      } else if (att.module === 'employee_documents') {
+        if (role === 'hr') allowed = true;
+        else if (req.user.employee_id) {
+          const ownEmpDoc = db.get('SELECT id FROM employee_documents WHERE attachment_id = ? AND employee_id = ?', [att.id, req.user.employee_id]);
+          allowed = Boolean(ownEmpDoc);
+        }
+      } else if (['staff_signup', 'doctor_signup'].includes(att.module)) {
+        allowed = false;
+      } else if (['publisher', 'campaigns'].includes(att.module)) {
+        if (['publisher', 'approver'].includes(role)) {
+          allowed = true;
+        } else {
+          const pubAnn = db.get(`SELECT id FROM announcements WHERE attachment_id = ? AND status = 'Published' AND date(expiry_date) >= date('now')`, [att.id]);
+          const pubCamp = db.get(`SELECT id FROM campaigns WHERE banner_attachment_id = ? AND status = 'Published' AND date(end_date) >= date('now')`, [att.id]);
+          allowed = Boolean(pubAnn || pubCamp);
+        }
+      } else if (['laboratory', 'radiology', 'patient_documents'].includes(att.module)) {
+        const lab = db.get('SELECT lo.patient_id, lo.status FROM lab_results lr JOIN lab_orders lo ON lo.id = lr.order_id WHERE lr.attachment_id = ?', [att.id]);
+        const rad = db.get('SELECT ro.patient_id, ro.status FROM radiology_reports rr JOIN radiology_orders ro ON ro.id = rr.order_id WHERE rr.attachment_id = ?', [att.id]);
+        const doc = db.get('SELECT patient_id FROM documents WHERE attachment_id = ?', [att.id]);
+        const targetPid = lab?.patient_id || rad?.patient_id || doc?.patient_id;
+
+        if (role === 'lab_staff' && att.module === 'laboratory') allowed = true;
+        else if (role === 'radiologist' && att.module === 'radiology') allowed = true;
+        else if (role === 'patient') {
+          allowed =
+            (lab && lab.patient_id === req.user.patient_id && lab.status === 'Released') ||
+            (rad && rad.patient_id === req.user.patient_id && rad.status === 'Released') ||
+            (doc && doc.patient_id === req.user.patient_id);
+        } else if (targetPid) {
+          allowed = canAccessClinicalRecord(db, req.user, targetPid);
+        }
+      }
     }
+
+    if (!allowed) throw new AppError(403, 'Not authorized to access this document.');
+
     const safePath = resolveSafeUploadPath(uploadDir, att.stored_name);
     if (!fs.existsSync(safePath)) throw new AppError(404, 'File missing on storage.');
     res.setHeader('Content-Type', att.mime_type);
@@ -40,7 +86,7 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
     const users = db.all(
       `SELECT u.id, u.user_code, u.email, u.full_name, u.phone, u.is_active, u.account_status, u.last_login_at, u.created_at,
               r.id as role_id, r.code as role, r.name as role_name, r.is_staff,
-              d.name as department_name, b.name as branch_name
+              u.department_id, u.branch_id, d.name as department_name, b.name as branch_name
        FROM users u
        JOIN roles r ON r.id = u.role_id
        LEFT JOIN departments d ON d.id = u.department_id
@@ -50,14 +96,123 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
     const roles = db.all('SELECT * FROM roles ORDER BY id');
     const permissions = db.all('SELECT * FROM permissions ORDER BY module, code');
     const rolePermissions = db.all('SELECT * FROM role_permissions');
-    const departments = db.all('SELECT d.*, b.name as branch_name FROM departments d LEFT JOIN branches b ON b.id = d.branch_id ORDER BY d.name');
+    const departments = db.all(
+      `SELECT d.*, b.name as branch_name, hu.full_name as head_name, hu.user_code as head_user_code,
+              (SELECT COUNT(*) FROM employee_profiles ep WHERE ep.department_id = d.id AND ep.employment_status = 'Active') as employee_count,
+              (SELECT COUNT(*) FROM doctor_profiles dp WHERE dp.department_id = d.id AND dp.is_active = 1) as doctor_count
+       FROM departments d
+       LEFT JOIN branches b ON b.id = d.branch_id
+       LEFT JOIN users hu ON hu.id = d.head_user_id
+       ORDER BY d.name`
+    );
     const specialties = db.all('SELECT s.*, d.name as department_name FROM specialties s LEFT JOIN departments d ON d.id = s.department_id ORDER BY s.name');
     const branches = db.all('SELECT * FROM branches ORDER BY id');
     const settings = db.all('SELECT * FROM settings ORDER BY key');
     const auditLogs = db.all(
-      `SELECT al.*, u.full_name as actor_name FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id ORDER BY al.id DESC LIMIT 100`
+      `SELECT al.*, u.full_name as actor_name, u.user_code as actor_code
+       FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id
+       ORDER BY al.id DESC LIMIT 200`
     );
-    res.json({ users, roles, permissions, rolePermissions, departments, specialties, branches, settings, auditLogs });
+    const stats = getAdminDashboardStats(db);
+    res.json({ users, roles, permissions, rolePermissions, departments, specialties, branches, settings, auditLogs, stats });
+  }));
+
+  router.get('/audit-logs', asyncHandler(async (req, res) => {
+    const { action = '', actor_role = '', entity_type = '', q = '', start_date = '', end_date = '', limit = '200' } = req.query;
+    const where = ['1=1'];
+    const params = [];
+    if (action) { where.push('al.action LIKE ?'); params.push(`%${action}%`); }
+    if (actor_role) { where.push('al.actor_role = ?'); params.push(actor_role); }
+    if (entity_type) { where.push('al.entity_type = ?'); params.push(entity_type); }
+    if (start_date) { where.push('date(al.created_at) >= date(?)'); params.push(start_date); }
+    if (end_date) { where.push('date(al.created_at) <= date(?)'); params.push(end_date); }
+    if (q && String(q).trim()) {
+      const like = `%${String(q).trim()}%`;
+      where.push('(al.action LIKE ? OR al.entity_type LIKE ? OR COALESCE(u.full_name,\'\') LIKE ? OR COALESCE(al.details,\'\') LIKE ?)');
+      params.push(like, like, like, like);
+    }
+    const maxLimit = Math.min(500, Math.max(10, Number(limit) || 200));
+    const logs = db.all(
+      `SELECT al.*, u.full_name as actor_name, u.email as actor_email, u.user_code as actor_code
+       FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY al.id DESC LIMIT ?`,
+      [...params, maxLimit]
+    );
+    res.json({ logs });
+  }));
+
+  router.get('/login-activity', asyncHandler(async (_req, res) => {
+    const events = db.all(
+      `SELECT al.id, al.actor_user_id, al.actor_role, al.action, al.ip_address, al.created_at,
+              u.full_name, u.email, u.user_code, u.last_login_at
+       FROM audit_logs al
+       LEFT JOIN users u ON u.id = al.actor_user_id
+       WHERE al.action IN ('auth.login_success', 'auth.login_failed', 'auth.password_reset', 'auth.register', 'auth.setup_admin')
+       ORDER BY al.id DESC LIMIT 120`
+    );
+    res.json({ events });
+  }));
+
+  router.get('/finance-payroll', asyncHandler(async (_req, res) => {
+    const totals = {
+      totalInvoiced: Number((db.get('SELECT COALESCE(SUM(total_amount),0) as s FROM invoices').s || 0).toFixed(2)),
+      totalCollected: Number((db.get("SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE status = 'Paid'").s || 0).toFixed(2)),
+      totalOutstanding: Number((db.get("SELECT COALESCE(SUM(balance_due),0) as s FROM invoices WHERE status IN ('Pending','Processing')").s || 0).toFixed(2)),
+      totalExpenses: Number((db.get('SELECT COALESCE(SUM(amount),0) as s FROM expenses').s || 0).toFixed(2)),
+      totalRefunds: Number((db.get('SELECT COALESCE(SUM(amount),0) as s FROM refunds').s || 0).toFixed(2)),
+      totalPayrollGross: Number((db.get('SELECT COALESCE(SUM(gross_salary),0) as s FROM payroll').s || 0).toFixed(2)),
+      totalPayrollNet: Number((db.get('SELECT COALESCE(SUM(net_salary),0) as s FROM payroll').s || 0).toFixed(2))
+    };
+    const invoices = db.all(
+      `SELECT i.*, pu.full_name as patient_name, p.patient_code
+       FROM invoices i JOIN patient_profiles p ON p.id = i.patient_id JOIN users pu ON pu.id = p.user_id
+       ORDER BY i.id DESC LIMIT 40`
+    );
+    const payments = db.all(
+      `SELECT p.*, i.invoice_number, pu.full_name as patient_name
+       FROM payments p JOIN invoices i ON i.id = p.invoice_id
+       JOIN patient_profiles pat ON pat.id = p.patient_id JOIN users pu ON pu.id = pat.user_id
+       ORDER BY p.id DESC LIMIT 40`
+    );
+    const payroll = db.all(
+      `SELECT pr.*, u.full_name as employee_name, ep.employee_code, ep.designation, d.name as department_name, ps.payslip_ref
+       FROM payroll pr
+       JOIN employee_profiles ep ON ep.id = pr.employee_id
+       JOIN users u ON u.id = ep.user_id
+       LEFT JOIN departments d ON d.id = ep.department_id
+       LEFT JOIN payslips ps ON ps.payroll_id = pr.id
+       ORDER BY pr.id DESC LIMIT 60`
+    );
+    const expenses = db.all(
+      `SELECT e.*, d.name as department_name FROM expenses e LEFT JOIN departments d ON d.id = e.department_id ORDER BY e.id DESC LIMIT 40`
+    );
+    const payrollSummaryByPeriod = db.all(
+      `SELECT pay_period, COUNT(*) as staff_count, ROUND(SUM(gross_salary), 2) as total_gross,
+              ROUND(SUM(deductions), 2) as total_deductions, ROUND(SUM(net_salary), 2) as total_net
+       FROM payroll GROUP BY pay_period ORDER BY pay_period DESC LIMIT 12`
+    );
+    res.json({ totals, invoices, payments, payroll, expenses, payrollSummaryByPeriod });
+  }));
+
+  router.get('/documents', asyncHandler(async (_req, res) => {
+    const documents = db.all(
+      `SELECT a.id, a.original_name, a.mime_type, a.size_bytes, a.module, a.created_at,
+              u.full_name as owner_name, u.user_code as owner_code, r.name as owner_role
+       FROM attachments a
+       LEFT JOIN users u ON u.id = a.owner_user_id
+       LEFT JOIN roles r ON r.id = u.role_id
+       ORDER BY a.id DESC LIMIT 150`
+    );
+    const employeeDocs = db.all(
+      `SELECT ed.*, u.full_name as employee_name, ep.employee_code, a.original_name, a.mime_type
+       FROM employee_documents ed
+       JOIN employee_profiles ep ON ep.id = ed.employee_id
+       JOIN users u ON u.id = ep.user_id
+       LEFT JOIN attachments a ON a.id = ed.attachment_id
+       ORDER BY ed.id DESC LIMIT 80`
+    );
+    res.json({ documents, employeeDocs });
   }));
 
   router.post(
@@ -72,7 +227,7 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
     asyncHandler(async (req, res) => {
       const {
         full_name, email, phone = '', role_id, department_id = null, branch_id = 1, password,
-        designation = 'Staff', qualification = 'MD', shift = 'Day', employee_id = '',
+        designation = 'Staff', qualification = 'MD', shift = 'Day', employment_type = 'Full-Time', employee_id = '',
         specialty_id = null, experience_years = 5, consultation_fee = 100,
         registration_number = '', medical_council = '',
         dob = '1990-01-01', gender = 'Other', address = 'Metro City'
@@ -114,8 +269,8 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
           );
         } else if (role.is_staff) {
           db.run(
-            'INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, qualification, shift, joining_date, base_salary) VALUES (?, ?, ?, ?, ?, ?, ?, date(\'now\'), ?)',
-            [uInfo.lastInsertRowid, safeEmpCode || `EMP-${uCode}`, deptIdNum, Number(branch_id), role.code === 'doctor' ? 'CONSULTANT DOCTOR' : designation, qualification || null, shift || 'Day', role.code === 'doctor' ? 14000 : 5000]
+            'INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, qualification, shift, employment_type, joining_date, base_salary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, date(\'now\'), ?)',
+            [uInfo.lastInsertRowid, safeEmpCode || `EMP-${uCode}`, deptIdNum, Number(branch_id), role.code === 'doctor' ? 'CONSULTANT DOCTOR' : designation, qualification || null, shift || 'Day', employment_type || 'Full-Time', role.code === 'doctor' ? 14000 : 5000]
           );
         }
         if (role.code === 'doctor') {
@@ -131,7 +286,14 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
             db.run('INSERT OR IGNORE INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, slot_minutes) VALUES (?, ?, ?, ?, 30)', [dpInfo.lastInsertRowid, dow, '09:00', '17:00']);
           }
         }
-        logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.user_created', entityType: 'user', entityId: uInfo.lastInsertRowid });
+        logAudit(db, {
+          actorUserId: req.user.id,
+          actorRole: 'admin',
+          action: 'admin.user_created',
+          entityType: 'user',
+          entityId: uInfo.lastInsertRowid,
+          details: { after: { email, full_name, role: role.code, department_id: deptIdNum } }
+        });
         return uInfo.lastInsertRowid;
       })();
       if (broker) broker.publish('member:registered', { userId: uid, title: 'Member Created', message: `${full_name} (${role.name}) added.` }, { roles: ['admin', 'hr'] });
@@ -142,42 +304,206 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
   router.patch('/users/:id/status', asyncHandler(async (req, res) => {
     const uid = Number(req.params.id);
     const { is_active, reset_password } = req.body;
+    const beforeUser = db.get('SELECT is_active, account_status FROM users WHERE id = ?', [uid]);
+    if (!beforeUser) throw new AppError(404, 'User not found.');
     if (is_active !== undefined) {
       db.run('UPDATE users SET is_active = ?, account_status = ?, updated_at = datetime(\'now\') WHERE id = ?',
         [is_active ? 1 : 0, is_active ? 'Active' : 'Suspended', uid]);
+      db.run('UPDATE doctor_profiles SET is_active = ? WHERE user_id = ?', [is_active ? 1 : 0, uid]);
     }
     if (reset_password) {
       if (!isStrongPassword(reset_password)) throw new AppError(400, 'Password must be 8+ chars with a number.');
       db.run('UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?', [bcrypt.hashSync(reset_password, 10), uid]);
     }
-    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.user_updated', entityType: 'user', entityId: uid });
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.user_updated',
+      entityType: 'user',
+      entityId: uid,
+      details: { before: beforeUser, after: { is_active: is_active !== undefined ? Boolean(is_active) : beforeUser.is_active, passwordReset: Boolean(reset_password) } }
+    });
     if (broker) broker.publish('member:updated', { userId: uid }, { roles: ['admin'] });
     res.json({ ok: true });
+  }));
+
+  // Roles & Permissions Management
+  router.post('/roles', asyncHandler(async (req, res) => {
+    const { code, name, description = '', is_staff = true, permission_ids = [] } = req.body;
+    if (!code || !name) throw new AppError(400, 'Role code and name are required.');
+    const normalizedCode = String(code).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const dup = db.get('SELECT id FROM roles WHERE code = ?', [normalizedCode]);
+    if (dup) throw new AppError(409, 'Role code already exists.');
+
+    const role = db.transaction(() => {
+      const info = db.run('INSERT INTO roles (code, name, description, is_staff) VALUES (?, ?, ?, ?)', [normalizedCode, name.trim(), description, is_staff ? 1 : 0]);
+      for (const pid of permission_ids) {
+        db.run('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [info.lastInsertRowid, Number(pid)]);
+      }
+      logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.role_created', entityType: 'role', entityId: info.lastInsertRowid, details: { after: { code: normalizedCode, name } } });
+      return db.get('SELECT * FROM roles WHERE id = ?', [info.lastInsertRowid]);
+    })();
+    res.status(201).json({ role });
+  }));
+
+  router.patch('/roles/:id', asyncHandler(async (req, res) => {
+    const roleId = Number(req.params.id);
+    const existing = db.get('SELECT * FROM roles WHERE id = ?', [roleId]);
+    if (!existing) throw new AppError(404, 'Role not found.');
+    const { name, description, is_staff } = req.body;
+    db.run(
+      `UPDATE roles SET name = COALESCE(?, name), description = COALESCE(?, description), is_staff = COALESCE(?, is_staff), updated_at = datetime('now') WHERE id = ?`,
+      [name ? name.trim() : null, description ?? null, is_staff !== undefined ? (is_staff ? 1 : 0) : null, roleId]
+    );
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.role_updated', entityType: 'role', entityId: roleId, details: { before: existing, after: { name, description, is_staff } } });
+    res.json({ role: db.get('SELECT * FROM roles WHERE id = ?', [roleId]) });
   }));
 
   router.put('/roles/:id/permissions', asyncHandler(async (req, res) => {
     const roleId = Number(req.params.id);
     const { permission_ids = [] } = req.body;
+    const beforePerms = db.all('SELECT permission_id FROM role_permissions WHERE role_id = ?', [roleId]).map((r) => r.permission_id);
     db.transaction(() => {
       db.run('DELETE FROM role_permissions WHERE role_id = ?', [roleId]);
       for (const pid of permission_ids) db.run('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [roleId, Number(pid)]);
-      logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.permissions_updated', entityType: 'role', entityId: roleId });
+      logAudit(db, {
+        actorUserId: req.user.id,
+        actorRole: 'admin',
+        action: 'admin.permissions_updated',
+        entityType: 'role',
+        entityId: roleId,
+        details: { before: { permission_ids: beforePerms }, after: { permission_ids: permission_ids.map(Number) } }
+      });
     })();
     res.json({ ok: true });
   }));
 
+  // Department Management
+  router.get('/departments', asyncHandler(async (_req, res) => {
+    const departments = db.all(
+      `SELECT d.*, b.name as branch_name, hu.full_name as head_name, hu.user_code as head_user_code,
+              (SELECT COUNT(*) FROM employee_profiles ep WHERE ep.department_id = d.id) as employee_count,
+              (SELECT COUNT(*) FROM doctor_profiles dp WHERE dp.department_id = d.id) as doctor_count
+       FROM departments d
+       LEFT JOIN branches b ON b.id = d.branch_id
+       LEFT JOIN users hu ON hu.id = d.head_user_id
+       ORDER BY d.name`
+    );
+    res.json({ departments });
+  }));
+
   router.post('/departments', asyncHandler(async (req, res) => {
-    const { code, name, branch_id = 1, category = 'clinical' } = req.body;
-    const info = db.run('INSERT INTO departments (code, name, branch_id, category) VALUES (?, ?, ?, ?)', [code.toUpperCase(), name, Number(branch_id), category]);
+    const { code, name, branch_id = 1, category = 'clinical', head_user_id = null, description = '' } = req.body;
+    if (!code || !name) throw new AppError(400, 'Department code and name are required.');
+    const info = db.run(
+      'INSERT INTO departments (code, name, branch_id, category, head_user_id, description) VALUES (?, ?, ?, ?, ?, ?)',
+      [code.trim().toUpperCase(), name.trim(), Number(branch_id), category, head_user_id ? Number(head_user_id) : null, description]
+    );
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.department_created', entityType: 'department', entityId: info.lastInsertRowid, details: { after: { code, name, category, head_user_id } } });
     res.status(201).json({ department: db.get('SELECT * FROM departments WHERE id = ?', [info.lastInsertRowid]) });
+  }));
+
+  router.patch('/departments/:id', asyncHandler(async (req, res) => {
+    const deptId = Number(req.params.id);
+    const existing = db.get('SELECT * FROM departments WHERE id = ?', [deptId]);
+    if (!existing) throw new AppError(404, 'Department not found.');
+    const { code, name, branch_id, category, head_user_id, description, is_active } = req.body;
+    db.run(
+      `UPDATE departments SET
+         code = COALESCE(?, code),
+         name = COALESCE(?, name),
+         branch_id = COALESCE(?, branch_id),
+         category = COALESCE(?, category),
+         head_user_id = ?,
+         description = COALESCE(?, description),
+         is_active = COALESCE(?, is_active),
+         updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        code ? code.trim().toUpperCase() : null,
+        name ? name.trim() : null,
+        branch_id ? Number(branch_id) : null,
+        category || null,
+        head_user_id !== undefined ? (head_user_id ? Number(head_user_id) : null) : existing.head_user_id,
+        description !== undefined ? description : null,
+        is_active !== undefined ? (is_active ? 1 : 0) : null,
+        deptId
+      ]
+    );
+    const updated = db.get('SELECT * FROM departments WHERE id = ?', [deptId]);
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.department_updated', entityType: 'department', entityId: deptId, details: { before: existing, after: updated } });
+    res.json({ department: updated });
+  }));
+
+  router.get('/departments/:id/employees', asyncHandler(async (req, res) => {
+    const deptId = Number(req.params.id);
+    const employees = db.all(
+      `SELECT u.id as user_id, u.user_code, u.full_name, u.email, u.phone, u.account_status, r.name as role_name, r.code as role,
+              ep.employee_code, ep.designation, ep.employment_type, ep.employment_status
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN employee_profiles ep ON ep.user_id = u.id
+       WHERE (u.department_id = ? OR ep.department_id = ?) AND r.is_staff = 1
+       ORDER BY u.full_name`,
+      [deptId, deptId]
+    );
+    res.json({ employees });
+  }));
+
+  // Branch Management
+  router.get('/branches', asyncHandler(async (_req, res) => {
+    res.json({ branches: db.all('SELECT * FROM branches ORDER BY id') });
+  }));
+
+  router.post('/branches', asyncHandler(async (req, res) => {
+    const { code, name, address, phone, email = '', city = '' } = req.body;
+    if (!code || !name || !address || !phone) throw new AppError(400, 'Code, name, address, and phone are required.');
+    const info = db.run(
+      'INSERT INTO branches (code, name, address, phone, email, city) VALUES (?, ?, ?, ?, ?, ?)',
+      [code.trim().toUpperCase(), name.trim(), address.trim(), phone.trim(), email.trim(), city.trim()]
+    );
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.branch_created', entityType: 'branch', entityId: info.lastInsertRowid });
+    res.status(201).json({ branch: db.get('SELECT * FROM branches WHERE id = ?', [info.lastInsertRowid]) });
+  }));
+
+  router.patch('/branches/:id', asyncHandler(async (req, res) => {
+    const branchId = Number(req.params.id);
+    const existing = db.get('SELECT * FROM branches WHERE id = ?', [branchId]);
+    if (!existing) throw new AppError(404, 'Branch not found.');
+    const { name, address, phone, email, city, is_active } = req.body;
+    db.run(
+      `UPDATE branches SET name = COALESCE(?, name), address = COALESCE(?, address), phone = COALESCE(?, phone),
+       email = COALESCE(?, email), city = COALESCE(?, city), is_active = COALESCE(?, is_active), updated_at = datetime('now') WHERE id = ?`,
+      [name || null, address || null, phone || null, email ?? null, city ?? null, is_active !== undefined ? (is_active ? 1 : 0) : null, branchId]
+    );
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.branch_updated', entityType: 'branch', entityId: branchId });
+    res.json({ branch: db.get('SELECT * FROM branches WHERE id = ?', [branchId]) });
   }));
 
   router.put('/settings', asyncHandler(async (req, res) => {
     const { key, value } = req.body;
+    if (!key) throw new AppError(400, 'Setting key is required.');
+    const before = db.get('SELECT value FROM settings WHERE key = ?', [key]);
     db.run('INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, datetime(\'now\')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime(\'now\')',
       [key, String(value), req.user.id]);
-    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.setting_updated', entityType: 'setting', entityId: key });
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.setting_updated', entityType: 'setting', entityId: key, details: { before: before?.value ?? null, after: String(value) } });
     res.json({ ok: true });
+  }));
+
+  router.put('/settings/bulk', asyncHandler(async (req, res) => {
+    const { settings } = req.body;
+    if (!settings || typeof settings !== 'object') throw new AppError(400, 'Settings map required.');
+    db.transaction(() => {
+      for (const [key, value] of Object.entries(settings)) {
+        db.run(
+          `INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, datetime('now'))
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')`,
+          [key, String(value), req.user.id]
+        );
+      }
+      logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.settings_bulk_updated', entityType: 'setting', entityId: 'bulk', details: { keys: Object.keys(settings) } });
+    })();
+    res.json({ settings: db.all('SELECT * FROM settings ORDER BY key') });
   }));
 
   return router;

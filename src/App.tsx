@@ -65,19 +65,30 @@ import { DoctorsAppointmentsPanel } from './components/DoctorsAppointmentsPanel'
 import { ClinicalDiagnosticsPanel } from './components/ClinicalDiagnosticsPanel';
 import { BillingInsurancePanel } from './components/BillingInsurancePanel';
 import { OperationsIntegrationsPanel } from './components/OperationsIntegrationsPanel';
-import { AuthModal } from './components/AuthModal';
+import { AuthModal, LoginPortalType } from './components/AuthModal';
 import { AdminSignupsPanel } from './components/AdminSignupsPanel';
+import { AdminDashboardPanel } from './components/AdminDashboardPanel';
+import { HrDashboardPanel } from './components/HrDashboardPanel';
+import { PublisherDashboardPanel } from './components/PublisherDashboardPanel';
+import { ApproverDashboardPanel } from './components/ApproverDashboardPanel';
 import { DoctorScheduleWizardModal } from './components/DoctorScheduleWizardModal';
 import { CandidateCareersPanel } from './components/CandidateCareersPanel';
 import { PharmacyInventoryPanel } from './components/PharmacyInventoryPanel';
+import { Megaphone, Building2, ClipboardCheck } from 'lucide-react';
 
 interface AuthUser {
   id: number;
   user_code: string;
   email: string;
   full_name: string;
+  phone?: string;
   role: string;
   role_name: string;
+  branch_name?: string;
+  department_name?: string;
+  employee_code?: string | null;
+  patient_code?: string | null;
+  last_login_at?: string | null;
   permissions: string[];
   schedule_configured?: number | boolean;
   doctor_id?: number;
@@ -224,6 +235,7 @@ export default function App() {
   // Auth & WebSocket state
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authPortal, setAuthPortal] = useState<LoginPortalType>('patient');
   const [needsSetup, setNeedsSetup] = useState(false);
   const [demoAccounts, setDemoAccounts] = useState<any[]>([]);
   const [pendingSignupsCount, setPendingSignupsCount] = useState(0);
@@ -231,6 +243,16 @@ export default function App() {
   const [wsConnected, setWsConnected] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' } | null>(null);
+  const [liveNotices, setLiveNotices] = useState<any[]>([]);
+  const [newRoleOpen, setNewRoleOpen] = useState(false);
+  const [newRoleForm, setNewRoleForm] = useState({ code: '', name: '', description: '', is_staff: true });
+  const [hrSubTab, setHrSubTab] = useState<'overview' | 'employees' | 'vacancies' | 'candidates' | 'interviews' | 'offers' | 'reports'>('overview');
+  const [pubSubTab, setPubSubTab] = useState<'overview' | 'notices' | 'campaigns' | 'acknowledgements'>('overview');
+  const [appSubTab, setAppSubTab] = useState<'pending_notices' | 'urgent' | 'pending_campaigns' | 'history'>('pending_notices');
+  const [logPage, setLogPage] = useState(1);
+  const LOG_PAGE_SIZE = 15;
+  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '' });
+  const [pwdForm, setPwdForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
 
   const notify = useCallback((message: string, tone: 'success' | 'error' = 'success') => {
     setToast({ message, tone });
@@ -281,6 +303,12 @@ export default function App() {
   const userRoleCode = authUser?.role || 'guest';
   const userRoleLabel = authUser?.role_name || 'Guest';
 
+  useEffect(() => {
+    if (authUser) {
+      setProfileForm({ full_name: authUser.full_name || '', phone: authUser.phone || '' });
+    }
+  }, [authUser]);
+
   const loadAuthenticatedWorkspace = useCallback(async (user: AuthUser) => {
     try {
       const notifRes = await apiRequest('/api/notifications').catch(() => ({ notifications: [] }));
@@ -314,6 +342,9 @@ export default function App() {
         setBeds(mappedBeds);
       }
 
+      const pubNoticesRes = await apiRequest('/api/publisher').catch(() => ({ announcements: [] }));
+      setLiveNotices(pubNoticesRes.announcements || []);
+
       if (user.role === 'admin') {
         const [adminRes, signupRes] = await Promise.all([
           apiRequest('/api/admin/overview').catch(() => null),
@@ -341,7 +372,7 @@ export default function App() {
               timestamp: created.replace('T', ' ').slice(0, 19),
               date: created.slice(0, 10),
               ip: al.ip_address || '127.0.0.1',
-              status: String(al.action || '').includes('fail') || String(al.action || '').includes('blocked') ? 'Error' : 'Success',
+              status: String(al.action || '').includes('fail') || String(al.action || '').includes('blocked') || String(al.action || '').includes('denied') ? 'Error' : 'Success',
               before: parsed.before || { entity: al.entity_type, id: al.entity_id },
               after: parsed.after || parsed,
             };
@@ -354,6 +385,14 @@ export default function App() {
       notify(err.message || 'Workspace sync issue', 'error');
     }
   }, [notify]);
+
+  const getHomeTabForRole = useCallback((role: string) => {
+    if (role === 'candidate') return 'careers';
+    if (role === 'hr') return 'hr_workspace';
+    if (role === 'publisher') return 'publisher_workspace';
+    if (role === 'approver') return 'approver_workspace';
+    return 'dashboard';
+  }, []);
 
   // Initial session hydration, setup check & optional demo account catalog
   useEffect(() => {
@@ -374,7 +413,7 @@ export default function App() {
       .then((res) => {
         if (res.user) {
           setAuthUser(res.user);
-          if (res.user.role === 'candidate') setActiveTab('careers');
+          setActiveTab(getHomeTabForRole(res.user.role));
           if (res.user.role === 'doctor' && !res.user.schedule_configured) setDoctorWizardOpen(true);
           loadAuthenticatedWorkspace(res.user);
         }
@@ -382,7 +421,7 @@ export default function App() {
       .catch(() => {
         setAuthModalOpen(true);
       });
-  }, [loadAuthenticatedWorkspace]);
+  }, [loadAuthenticatedWorkspace, getHomeTabForRole]);
 
   // Real multi-user WebSocket client connection
   useEffect(() => {
@@ -459,7 +498,7 @@ export default function App() {
       setAccessToken(res.token);
       setAuthUser(res.user);
       setAuthModalOpen(false);
-      setActiveTab(res.user.role === 'candidate' ? 'careers' : 'dashboard');
+      setActiveTab(getHomeTabForRole(res.user.role));
       setDoctorWizardOpen(Boolean(res.user.role === 'doctor' && !res.user.schedule_configured));
       notify(`Signed in as ${res.user.full_name} (${res.user.role_name}).`, 'success');
       loadAuthenticatedWorkspace(res.user);
@@ -525,6 +564,16 @@ export default function App() {
       return matchesSearch && matchesDateRange;
     });
   }, [activityLogs, searchQuery, startDate, endDate]);
+
+  useEffect(() => {
+    setLogPage(1);
+  }, [searchQuery, startDate, endDate]);
+
+  const totalLogPages = Math.max(1, Math.ceil(filteredLogs.length / LOG_PAGE_SIZE));
+  const pagedLogs = useMemo(
+    () => filteredLogs.slice((logPage - 1) * LOG_PAGE_SIZE, logPage * LOG_PAGE_SIZE),
+    [filteredLogs, logPage]
+  );
 
   const logSummaryCounts = useMemo(() => {
     const total = filteredLogs.length;
@@ -647,13 +696,103 @@ export default function App() {
     return [];
   }, [dashboardStats]);
 
+  const handleCreateRole = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await apiRequest('/api/admin/roles', { method: 'POST', body: newRoleForm });
+      notify(`Role "${newRoleForm.name}" created.`, 'success');
+      setNewRoleOpen(false);
+      setNewRoleForm({ code: '', name: '', description: '', is_staff: true });
+      if (authUser) loadAuthenticatedWorkspace(authUser);
+    } catch (err: any) {
+      notify(err.message || 'Role creation failed', 'error');
+    }
+  };
+
+  const handleAcknowledgeNotice = async (noticeId: number) => {
+    try {
+      await apiRequest(`/api/publisher/${noticeId}/ack`, { method: 'POST', body: {} });
+      notify('Notice acknowledged.', 'success');
+      if (authUser) loadAuthenticatedWorkspace(authUser);
+    } catch (err: any) {
+      notify(err.message || 'Could not acknowledge notice', 'error');
+    }
+  };
+
+  const handleSaveMyProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await apiRequest<{ user: AuthUser; message: string }>('/api/auth/profile', {
+        method: 'PATCH',
+        body: { full_name: profileForm.full_name, phone: profileForm.phone },
+      });
+      setAuthUser(res.user);
+      notify(res.message || 'Profile updated.', 'success');
+    } catch (err: any) {
+      notify(err.message || 'Failed updating profile.', 'error');
+    }
+  };
+
+  const handleChangeMyPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pwdForm.new_password !== pwdForm.confirm_password) {
+      notify('New password and confirmation do not match.', 'error');
+      return;
+    }
+    try {
+      const res = await apiRequest<{ message: string }>('/api/auth/change-password', {
+        method: 'POST',
+        body: { current_password: pwdForm.current_password, new_password: pwdForm.new_password },
+      });
+      setPwdForm({ current_password: '', new_password: '', confirm_password: '' });
+      notify(res.message || 'Password updated.', 'success');
+    } catch (err: any) {
+      notify(err.message || 'Password change failed.', 'error');
+    }
+  };
+
   // Role-gated navigation definition driven by authenticated permissions
   const navigationItems = useMemo(() => {
+    if (!authUser) return [];
     if (userRoleCode === 'candidate') {
-      return [{ id: 'careers', label: 'Careers & Applications', icon: Briefcase }];
+      return [
+        { id: 'careers', label: 'Careers & Applications', icon: Briefcase },
+        { id: 'profile', label: 'My Profile', icon: User },
+      ];
     }
+    if (userRoleCode === 'hr') {
+      return [
+        { id: 'hr_workspace', subTab: 'overview', label: 'HR Overview', icon: LayoutDashboard },
+        { id: 'hr_workspace', subTab: 'employees', label: 'Employees & Payroll', icon: Users },
+        { id: 'hr_workspace', subTab: 'vacancies', label: 'Job Vacancies', icon: Briefcase },
+        { id: 'hr_workspace', subTab: 'candidates', label: 'Candidate Pipeline', icon: UserCheck },
+        { id: 'hr_workspace', subTab: 'interviews', label: 'Interviews', icon: CalendarIcon },
+        { id: 'hr_workspace', subTab: 'offers', label: 'Job Offers', icon: CheckCircle2 },
+        { id: 'hr_workspace', subTab: 'reports', label: 'HR Reports', icon: BarChart3 },
+        { id: 'profile', label: 'My Profile', icon: User },
+      ];
+    }
+    if (userRoleCode === 'publisher') {
+      return [
+        { id: 'publisher_workspace', subTab: 'overview', label: 'Publisher Overview', icon: LayoutDashboard },
+        { id: 'publisher_workspace', subTab: 'notices', label: 'Notice Management', icon: Megaphone },
+        { id: 'publisher_workspace', subTab: 'campaigns', label: 'Ads & Campaigns', icon: TrendingUp },
+        { id: 'publisher_workspace', subTab: 'acknowledgements', label: 'Acknowledgements', icon: Users },
+        { id: 'profile', label: 'My Profile', icon: User },
+      ];
+    }
+    if (userRoleCode === 'approver') {
+      return [
+        { id: 'approver_workspace', subTab: 'pending_notices', label: 'Pending Notices', icon: ClipboardCheck },
+        { id: 'approver_workspace', subTab: 'urgent', label: 'Emergency & Urgent', icon: ShieldAlert },
+        { id: 'approver_workspace', subTab: 'pending_campaigns', label: 'Pending Campaigns', icon: TrendingUp },
+        { id: 'approver_workspace', subTab: 'history', label: 'Approval History', icon: Clock },
+        { id: 'profile', label: 'My Profile', icon: User },
+      ];
+    }
+
     const perms = new Set(authUser?.permissions || []);
-    const items: Array<{ id: string; label: string; icon: any; badge?: number }> = [
+    const items: Array<{ id: string; subTab?: string; label: string; icon: any; badge?: number }> = [
       { id: 'dashboard', label: `${userRoleLabel} Home`, icon: LayoutDashboard },
     ];
     if (perms.has('patients.read_all') || userRoleCode === 'patient') {
@@ -683,15 +822,45 @@ export default function App() {
     if (perms.has('finance.manage') || perms.has('insurance.manage') || userRoleCode === 'patient') {
       items.push({ id: 'billing', label: 'Billing & Insurance', icon: CreditCard });
     }
-    if (['admin', 'hr', 'publisher', 'approver', 'accountant', 'receptionist', 'external_coordinator'].includes(userRoleCode)) {
-      items.push({ id: 'operations', label: 'HR & Integrations', icon: Briefcase });
+    if (['accountant', 'receptionist', 'external_coordinator'].includes(userRoleCode)) {
+      items.push({ id: 'operations', label: 'Integrations & Notices', icon: Briefcase });
     }
     if (userRoleCode === 'admin') {
-      items.push({ id: 'users_signups', label: 'Users & Signups', icon: UserCheck, badge: pendingSignupsCount });
-      items.push({ id: 'settings', label: 'Compliance & RBAC', icon: Settings, badge: activityLogs.length });
+      items.push({ id: 'users_signups', label: 'Users & Staff', icon: UserCheck, badge: pendingSignupsCount });
+      items.push({ id: 'departments', label: 'Departments', icon: Building2 });
+      items.push({ id: 'finance_payroll', label: 'Finance & Payroll', icon: CreditCard });
+      items.push({ id: 'hr_workspace', label: 'HR Oversight', icon: Briefcase });
+      items.push({ id: 'admin_notices_docs', label: 'Notices & Docs', icon: Megaphone });
+      items.push({ id: 'admin_settings', label: 'System Settings', icon: SlidersHorizontal });
+      items.push({ id: 'settings', label: 'RBAC & Audit Logs', icon: Settings, badge: activityLogs.length });
     }
+    items.push({ id: 'profile', label: 'My Profile', icon: User });
     return items;
   }, [authUser, userRoleCode, userRoleLabel, beds, activityLogs.length, pendingSignupsCount]);
+
+  const allowedTabIds = useMemo(() => new Set(navigationItems.map((i) => i.id)), [navigationItems]);
+  const isRouteAuthorized = !authUser || allowedTabIds.has(activeTab);
+
+  // Sync URL hash to activeTab & listen to hash navigation with route protection
+  useEffect(() => {
+    const syncFromHash = () => {
+      const h = window.location.hash.replace(/^#\/?/, '').trim();
+      if (h && ['dashboard', 'careers', 'hr_workspace', 'publisher_workspace', 'approver_workspace', 'patients', 'doctors', 'appointments', 'beds', 'pharmacy', 'billing', 'operations', 'users_signups', 'departments', 'finance_payroll', 'admin_notices_docs', 'admin_settings', 'settings', 'profile'].includes(h)) {
+        setActiveTab(h);
+      }
+    };
+    window.addEventListener('hashchange', syncFromHash);
+    return () => window.removeEventListener('hashchange', syncFromHash);
+  }, []);
+
+  useEffect(() => {
+    if (authUser && activeTab) {
+      const expectedHash = `#/${activeTab}`;
+      if (window.location.hash !== expectedHash) {
+        window.history.replaceState(null, '', expectedHash);
+      }
+    }
+  }, [authUser, activeTab]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
@@ -789,12 +958,20 @@ export default function App() {
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
           {navigationItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            const isActive =
+              activeTab === item.id &&
+              (!item.subTab ||
+                (item.id === 'hr_workspace' && hrSubTab === item.subTab) ||
+                (item.id === 'publisher_workspace' && pubSubTab === item.subTab) ||
+                (item.id === 'approver_workspace' && appSubTab === item.subTab));
             return (
               <button
-                key={item.id}
+                key={`${item.id}-${item.subTab || 'main'}`}
                 onClick={() => {
                   setActiveTab(item.id);
+                  if (item.id === 'hr_workspace' && item.subTab) setHrSubTab(item.subTab as any);
+                  if (item.id === 'publisher_workspace' && item.subTab) setPubSubTab(item.subTab as any);
+                  if (item.id === 'approver_workspace' && item.subTab) setAppSubTab(item.subTab as any);
                   setIsMobileMenuOpen(false);
                 }}
                 className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-sm transition-all ${
@@ -820,10 +997,18 @@ export default function App() {
         <div className="p-4 border-t border-slate-100 bg-slate-50/50">
           {authUser ? (
             <div className="flex items-center justify-between">
-              <div className="overflow-hidden">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('profile');
+                  setIsMobileMenuOpen(false);
+                }}
+                className="overflow-hidden text-left hover:opacity-80"
+                title="View My Profile"
+              >
                 <p className="text-sm font-semibold text-slate-900 truncate">{authUser.full_name}</p>
                 <p className="text-xs text-slate-500 truncate">{authUser.role_name} · {authUser.user_code}</p>
-              </div>
+              </button>
               <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-rose-600 rounded-lg" title="Sign Out">
                 <LogOut className="w-4 h-4" />
               </button>
@@ -915,15 +1100,46 @@ export default function App() {
 
         <div className="p-4 md:p-8 flex-1 max-w-7xl w-full mx-auto">
           {!authUser && (
-            <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="text-xs text-blue-900">
-                <strong>Authentication Required for Live SQLite Sync:</strong> Sign in with a hospital account to load live database records and open a WebSocket channel.
+            <div className="mb-6 bg-white border border-slate-200 rounded-2xl p-6 shadow-xs space-y-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">CareLine HMS — Four Role-Protected Login Portals</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Select your designated hospital portal to authenticate with role-based access control.</p>
               </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {[
+                  { portal: 'patient' as LoginPortalType, title: '1. Patient Login', desc: 'Appointments, EHR, Reports & Careers' },
+                  { portal: 'staff' as LoginPortalType, title: '2. Hospital Staff Login', desc: 'Doctors, Nurses, Reception, Lab & Pharmacy' },
+                  { portal: 'admin' as LoginPortalType, title: '3. Administrator Login', desc: 'Governance, Users, RBAC & Audit Logs' },
+                  { portal: 'hr_publisher' as LoginPortalType, title: '4. HR / Publisher Login', desc: 'HR Hiring Team, Publisher & Approver' },
+                ].map((entry) => (
+                  <button
+                    key={entry.portal}
+                    onClick={() => {
+                      setAuthPortal(entry.portal);
+                      setAuthModalOpen(true);
+                    }}
+                    className="p-4 text-left bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl transition-all"
+                  >
+                    <div className="font-bold text-sm text-slate-900">{entry.title}</div>
+                    <div className="text-xs text-slate-500 mt-1">{entry.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {authUser && !isRouteAuthorized && (
+            <div className="bg-white border border-rose-200 rounded-2xl p-8 text-center space-y-3 shadow-xs">
+              <ShieldAlert className="w-10 h-10 text-rose-600 mx-auto" />
+              <h2 className="text-lg font-bold text-slate-900">403 — Access Restricted</h2>
+              <p className="text-xs text-slate-600 max-w-md mx-auto">
+                Your role ({authUser.role_name}) is not authorized to view the <strong>{activeTab}</strong> module.
+              </p>
               <button
-                onClick={() => setAuthModalOpen(true)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold shrink-0"
+                onClick={() => setActiveTab(getHomeTabForRole(authUser.role))}
+                className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold"
               >
-                Open Sign-In Portal
+                Return to My Authorized Dashboard
               </button>
             </div>
           )}
@@ -942,13 +1158,95 @@ export default function App() {
             </div>
           )}
 
-          {/* CANDIDATE PORTAL */}
-          {activeTab === 'careers' && userRoleCode === 'candidate' && (
+          {/* DEDICATED ROLE WORKSPACES */}
+          {isRouteAuthorized && activeTab === 'careers' && userRoleCode === 'candidate' && (
             <CandidateCareersPanel onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
+          {isRouteAuthorized && activeTab === 'hr_workspace' && ['hr', 'admin'].includes(userRoleCode) && (
+            <HrDashboardPanel onNotify={notify} refreshSignal={refreshSignal} initialSubTab={hrSubTab} />
+          )}
+
+          {isRouteAuthorized && activeTab === 'publisher_workspace' && ['publisher', 'admin'].includes(userRoleCode) && (
+            <PublisherDashboardPanel onNotify={notify} refreshSignal={refreshSignal} initialSubTab={pubSubTab} />
+          )}
+
+          {isRouteAuthorized && activeTab === 'approver_workspace' && ['approver', 'admin'].includes(userRoleCode) && (
+            <ApproverDashboardPanel currentUserId={authUser!.id} onNotify={notify} refreshSignal={refreshSignal} initialSubTab={appSubTab} />
+          )}
+
+          {isRouteAuthorized && activeTab === 'profile' && authUser && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">My Profile & Account Security</h2>
+                <p className="text-sm text-slate-500 mt-1">Review your assigned role, hospital department details, contact information, and password security.</p>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <form onSubmit={handleSaveMyProfile} className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4 text-xs">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div>
+                      <h3 className="font-bold text-base text-slate-900">{authUser.full_name}</h3>
+                      <p className="font-mono text-blue-700 font-semibold">{authUser.user_code} · {authUser.role_name}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3.5 rounded-xl">
+                    <div><span className="text-slate-500 block">Email</span><span className="font-semibold">{authUser.email}</span></div>
+                    <div><span className="text-slate-500 block">Branch</span><span className="font-semibold">{authUser.branch_name || 'Main Campus'}</span></div>
+                    <div><span className="text-slate-500 block">Department</span><span className="font-semibold">{authUser.department_name || '—'}</span></div>
+                    <div><span className="text-slate-500 block">Staff / Patient Code</span><span className="font-mono font-semibold">{authUser.employee_code || authUser.patient_code || authUser.user_code}</span></div>
+                    <div className="col-span-2"><span className="text-slate-500 block">Last Login</span><span className="font-mono">{authUser.last_login_at ? String(authUser.last_login_at).slice(0, 19) : 'Active Session'}</span></div>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">Full Name</label>
+                    <input required value={profileForm.full_name} onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">Phone Number</label>
+                    <input value={profileForm.phone} onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })} placeholder="+1-555-0100" className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+                  </div>
+                  <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold">
+                    Save Profile Changes
+                  </button>
+                </form>
+
+                <form onSubmit={handleChangeMyPassword} className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4 text-xs">
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                    <Lock className="w-4 h-4 text-blue-600" />
+                    <h3 className="font-bold text-base text-slate-900">Change Account Password</h3>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">Current Password</label>
+                    <input required type="password" value={pwdForm.current_password} onChange={(e) => setPwdForm({ ...pwdForm, current_password: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">New Password (8+ chars, 1 number)</label>
+                    <input required type="password" minLength={8} value={pwdForm.new_password} onChange={(e) => setPwdForm({ ...pwdForm, new_password: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">Confirm New Password</label>
+                    <input required type="password" minLength={8} value={pwdForm.confirm_password} onChange={(e) => setPwdForm({ ...pwdForm, confirm_password: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+                  </div>
+                  <button type="submit" className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold">
+                    Update Password
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {isRouteAuthorized && ['departments', 'finance_payroll', 'admin_notices_docs', 'admin_settings'].includes(activeTab) && userRoleCode === 'admin' && (
+            <AdminDashboardPanel
+              section={activeTab as any}
+              onNotify={notify}
+              refreshSignal={refreshSignal}
+              onDataChanged={() => {
+                if (authUser) loadAuthenticatedWorkspace(authUser);
+              }}
+            />
+          )}
+
           {/* DASHBOARD */}
-          {activeTab === 'dashboard' && userRoleCode !== 'candidate' && (
+          {isRouteAuthorized && activeTab === 'dashboard' && !['candidate', 'hr', 'publisher', 'approver'].includes(userRoleCode) && (
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
@@ -966,6 +1264,28 @@ export default function App() {
                   </span>
                 </div>
               </div>
+
+              {userRoleCode === 'admin' && dashboardStats?.kpis && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                  {[
+                    { label: 'Total Patients', value: dashboardStats.kpis.totalPatients },
+                    { label: 'Total Doctors', value: dashboardStats.kpis.totalDoctors },
+                    { label: 'Total Employees', value: dashboardStats.kpis.totalEmployees ?? 0 },
+                    { label: 'Active Staff', value: dashboardStats.kpis.activeStaff ?? 0 },
+                    { label: 'Total Departments', value: dashboardStats.kpis.totalDepartments ?? 0 },
+                    { label: 'Total Appointments', value: dashboardStats.kpis.totalAppointments ?? 0 },
+                    { label: 'Beds (Avail / Occ)', value: `${dashboardStats.kpis.availableBeds}/${dashboardStats.kpis.occupiedBeds}` },
+                    { label: 'Total Revenue', value: `$${Number(dashboardStats.kpis.totalRevenue ?? 0).toLocaleString()}` },
+                    { label: 'Pending Payments', value: `$${Number(dashboardStats.kpis.pendingPayments ?? dashboardStats.kpis.outstandingPayments ?? 0).toLocaleString()}` },
+                    { label: 'System Notifications', value: dashboardStats.kpis.systemNotifications ?? notifications.length },
+                  ].map((kpi) => (
+                    <div key={kpi.label} className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase">{kpi.label}</div>
+                      <div className="text-2xl font-bold font-mono text-slate-900 mt-1">{kpi.value}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <motion.div whileHover={{ scale: 1.03, y: -3 }} className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
@@ -1020,6 +1340,38 @@ export default function App() {
                   </div>
                 </motion.div>
               </div>
+
+              {liveNotices.length > 0 && (
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Megaphone className="w-4 h-4 text-blue-600" />
+                    <h3 className="font-bold text-sm text-slate-900">Published Hospital Notices</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {liveNotices.slice(0, 4).map((n) => (
+                      <div key={n.id} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/70 text-xs space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-slate-900">{n.title}</span>
+                          <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-semibold">{n.priority}</span>
+                        </div>
+                        <p className="text-slate-600">{n.body}</p>
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-slate-400">{n.category || 'General'} · Valid until {n.expiry_date}</span>
+                          {n.my_acknowledged_at ? (
+                            <span className="text-emerald-700 font-semibold inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Acknowledged
+                            </span>
+                          ) : (
+                            <button onClick={() => handleAcknowledgeNotice(n.id)} className="px-2.5 py-1 bg-blue-600 text-white rounded-lg font-semibold">
+                              Acknowledge
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
@@ -1105,27 +1457,27 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'patients' && (
+          {isRouteAuthorized && activeTab === 'patients' && (
             <PatientsPanel searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
-          {(activeTab === 'doctors' || activeTab === 'appointments') && (
+          {isRouteAuthorized && (activeTab === 'doctors' || activeTab === 'appointments') && (
             <DoctorsAppointmentsPanel mode={activeTab as 'doctors' | 'appointments'} searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
-          {activeTab === 'pharmacy' && (
+          {isRouteAuthorized && activeTab === 'pharmacy' && (
             <PharmacyInventoryPanel searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
-          {activeTab === 'billing' && (
+          {isRouteAuthorized && activeTab === 'billing' && (
             <BillingInsurancePanel userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
-          {activeTab === 'operations' && (
+          {isRouteAuthorized && activeTab === 'operations' && (
             <OperationsIntegrationsPanel userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
-          {activeTab === 'users_signups' && userRoleCode === 'admin' && (
+          {isRouteAuthorized && activeTab === 'users_signups' && userRoleCode === 'admin' && (
             <AdminSignupsPanel
               onNotify={notify}
               refreshSignal={refreshSignal}
@@ -1136,7 +1488,7 @@ export default function App() {
           )}
 
           {/* ADMISSIONS & BEDS WITH 7-DAY LINE CHART & BED TRANSFER MODAL */}
-          {activeTab === 'beds' && (
+          {isRouteAuthorized && activeTab === 'beds' && (
             <div className="space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
@@ -1236,7 +1588,7 @@ export default function App() {
           )}
 
           {/* SETTINGS & COMPLIANCE AUDITS */}
-          {activeTab === 'settings' && (
+          {isRouteAuthorized && activeTab === 'settings' && userRoleCode === 'admin' && (
             <div className="space-y-6">
               <div>
                 <h2 className="text-2xl font-bold text-slate-900">Settings & Compliance Audits</h2>
@@ -1362,7 +1714,7 @@ export default function App() {
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         <AnimatePresence>
-                          {filteredLogs.map((log, idx) => {
+                          {pagedLogs.map((log, idx) => {
                             const isExpanded = !!expandedLogIds[log.id];
                             return (
                               <React.Fragment key={log.id}>
@@ -1402,26 +1754,44 @@ export default function App() {
                       </tbody>
                     </table>
                   </div>
+                  {filteredLogs.length > LOG_PAGE_SIZE && (
+                    <div className="px-6 py-3 bg-slate-50/70 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600">
+                      <span>Showing {(logPage - 1) * LOG_PAGE_SIZE + 1}–{Math.min(logPage * LOG_PAGE_SIZE, filteredLogs.length)} of {filteredLogs.length} audit events</span>
+                      <div className="flex items-center gap-1.5">
+                        <button disabled={logPage <= 1} onClick={() => setLogPage((p) => Math.max(1, p - 1))} className="px-3 py-1 bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-40 rounded-lg font-semibold">Previous</button>
+                        <span className="font-mono px-2">Page {logPage} / {totalLogPages}</span>
+                        <button disabled={logPage >= totalLogPages} onClick={() => setLogPage((p) => Math.min(totalLogPages, p + 1))} className="px-3 py-1 bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-40 rounded-lg font-semibold">Next</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
               {settingsSubTab === 'roles' && rbacOverview && (
                 <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4">
-                  <h3 className="font-bold text-slate-900 text-lg">Server-Enforced RBAC Matrix</h3>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-lg">Complete Server-Enforced RBAC Matrix</h3>
+                      <p className="text-xs text-slate-500">Toggle live role permissions or create custom hospital roles.</p>
+                    </div>
+                    <button onClick={() => setNewRoleOpen(true)} className="px-3.5 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5">
+                      <Plus className="w-4 h-4" /> Create Role
+                    </button>
+                  </div>
                   <div className="space-y-3">
-                    {(rbacOverview.roles || []).filter((r: any) => r.code !== 'pending_staff').slice(0, 8).map((role: any) => {
+                    {(rbacOverview.roles || []).filter((r: any) => r.code !== 'pending_staff').map((role: any) => {
                       const assigned = new Set((rbacOverview.rolePermissions || []).filter((rp: any) => rp.role_id === role.id).map((rp: any) => rp.permission_id));
                       return (
                         <div key={role.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200/60 space-y-2">
                           <div className="font-bold text-sm text-slate-900">{role.name} ({role.code})</div>
-                          <div className="flex flex-wrap gap-2">
-                            {(rbacOverview.permissions || []).slice(0, 12).map((p: any) => {
+                          <div className="flex flex-wrap gap-1.5">
+                            {(rbacOverview.permissions || []).map((p: any) => {
                               const on = assigned.has(p.id);
                               return (
                                 <button
                                   key={p.id}
                                   onClick={() => handleToggleRolePerm(role.id, p.id)}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${
+                                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold border ${
                                     on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'
                                   }`}
                                 >
@@ -1438,18 +1808,38 @@ export default function App() {
               )}
 
               {(settingsSubTab === 'security' || settingsSubTab === 'general') && (
-                <div className="bg-white rounded-2xl border border-slate-200/80 p-8 text-center shadow-xs">
-                  <Shield className="w-10 h-10 text-blue-600 mx-auto mb-3" />
-                  <h3 className="text-lg font-bold text-slate-900 capitalize">{settingsSubTab} Policy Enforcement</h3>
-                  <p className="text-xs text-slate-500 mt-1 max-w-lg mx-auto">
-                    CSRF headers, HMAC webhook signature validation, parameterized SQLite queries, and JWT session rotation are enforced on the Express backend.
-                  </p>
-                </div>
+                <AdminDashboardPanel
+                  section="admin_settings"
+                  onNotify={notify}
+                  refreshSignal={refreshSignal}
+                  onDataChanged={() => {
+                    if (authUser) loadAuthenticatedWorkspace(authUser);
+                  }}
+                />
               )}
             </div>
           )}
         </div>
       </main>
+
+      {newRoleOpen && (
+        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+          <form onSubmit={handleCreateRole} className="bg-white rounded-2xl max-w-md w-full p-6 space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-base">Create Custom Role</h3>
+              <button type="button" onClick={() => setNewRoleOpen(false)}><X className="w-5 h-5 text-slate-400" /></button>
+            </div>
+            <input required placeholder="Role Code (e.g. compliance_officer)" value={newRoleForm.code} onChange={(e) => setNewRoleForm({ ...newRoleForm, code: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+            <input required placeholder="Role Display Name" value={newRoleForm.name} onChange={(e) => setNewRoleForm({ ...newRoleForm, name: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+            <input placeholder="Description" value={newRoleForm.description} onChange={(e) => setNewRoleForm({ ...newRoleForm, description: e.target.value })} className="w-full px-3 py-2 bg-slate-100 rounded-xl" />
+            <label className="flex items-center gap-2 text-slate-700">
+              <input type="checkbox" checked={newRoleForm.is_staff} onChange={(e) => setNewRoleForm({ ...newRoleForm, is_staff: e.target.checked })} />
+              <span>Hospital Staff Role</span>
+            </label>
+            <button type="submit" className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-semibold">Create Role</button>
+          </form>
+        </div>
+      )}
 
       {/* Unified First-Run Setup, Sign In, Sign Up & Forgot Password Modal */}
       <AuthModal
@@ -1457,12 +1847,13 @@ export default function App() {
         canClose={Boolean(authUser)}
         needsSetup={needsSetup}
         demoAccounts={demoAccounts}
+        initialPortal={authPortal}
         onClose={() => setAuthModalOpen(false)}
         onSetupComplete={() => setNeedsSetup(false)}
         onAuthenticated={(user, message) => {
           setAuthUser(user);
           setAuthModalOpen(false);
-          setActiveTab(user.role === 'candidate' ? 'careers' : 'dashboard');
+          setActiveTab(getHomeTabForRole(user.role));
           setDoctorWizardOpen(Boolean(user.role === 'doctor' && !user.schedule_configured));
           notify(message, 'success');
           loadAuthenticatedWorkspace(user);

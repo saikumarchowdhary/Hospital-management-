@@ -59,7 +59,7 @@ export function createBloodBankRouter(db, broker, authenticate) {
     res.status(201).json({ bag: db.get('SELECT * FROM blood_inventory WHERE id = ?', [info.lastInsertRowid]) });
   }));
 
-  router.post('/requests', asyncHandler(async (req, res) => {
+  router.post('/requests', requirePermission('bloodbank.manage', 'clinical.write', 'clinical.read', 'external.manage'), asyncHandler(async (req, res) => {
     const { patient_id, blood_group_id, component = 'Whole Blood', units_requested = 1, urgency = 'Routine' } = req.body;
     const ref = `BLD-${Date.now().toString().slice(-6)}`;
     const info = db.run(

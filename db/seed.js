@@ -49,6 +49,10 @@ export const PERMISSIONS = [
   ['housekeeping.manage', 'housekeeping', 'Complete cleaning tasks and pass room inspections'],
   ['external.manage', 'external', 'Coordinate suppliers and external provider requests'],
   ['reports.view', 'reports', 'View authorized operational reports and CSV exports'],
+  ['departments.manage', 'admin', 'Create and edit hospital departments and department heads'],
+  ['roles.manage', 'admin', 'Create and configure roles and permissions'],
+  ['settings.manage', 'admin', 'Configure hospital, branch, notification, and security settings'],
+  ['audit.view', 'admin', 'View system audit logs and login activity'],
   ['admin.all', 'admin', 'Full system administration and audit log review']
 ];
 
@@ -205,9 +209,20 @@ export function seedReferenceData(db) {
 
     const settings = [
       ['hospital_name', 'MediCore HMS', 'Primary hospital name displayed in portal and receipts'],
+      ['hospital_tagline', 'Integrated Clinical & Hospital Operations Platform', 'Hospital subtitle displayed across portals'],
+      ['hospital_address', '450 Medical Center Blvd, Metro City', 'Primary hospital address for reports and notices'],
+      ['hospital_phone', '+1-555-8000', 'Main hospital switchboard phone number'],
+      ['hospital_email', 'central@medicore-hms.org', 'Official hospital contact email'],
       ['emergency_hotline', '+1-555-911-CARE', 'Direct emergency triage desk phone number'],
       ['tax_rate_percent', '5', 'Default invoice tax percentage'],
-      ['allow_patient_refills', 'true', 'Allow patients to request prescription refills online']
+      ['allow_patient_refills', 'true', 'Allow patients to request prescription refills online'],
+      ['session_timeout_minutes', '240', 'Default portal idle session timeout in minutes'],
+      ['password_min_length', '8', 'Minimum required password length for accounts'],
+      ['allow_self_approval', 'false', 'Whether an Approver or Admin may approve their own submitted notices/campaigns'],
+      ['require_notice_approval_above_priority', 'Normal', 'Approval policy threshold (All/Normal, Urgent, Emergency)'],
+      ['enable_email_notifications', 'true', 'Enable system email alerts for workflows and notices'],
+      ['enable_sms_notifications', 'true', 'Enable SMS notifications for appointments and critical alerts'],
+      ['document_max_size_mb', '10', 'Maximum upload size in MB for staff and publisher attachments']
     ];
     for (const [k, v, d] of settings) {
       db.run('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', [k, v, d]);
