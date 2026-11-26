@@ -503,6 +503,7 @@ export const AdminSignupsPanel: React.FC<Props> = ({ onNotify, refreshSignal, on
           <div className="flex flex-wrap gap-1.5 pb-2 border-b border-slate-100">
             {[
               { code: 'all', label: 'All Accounts' },
+              { code: 'admin', label: 'Admins' },
               { code: 'staff_only', label: 'All Hospital Staff' },
               { code: 'doctor', label: 'Doctors' },
               { code: 'nurse', label: 'Nurses' },
@@ -515,6 +516,7 @@ export const AdminSignupsPanel: React.FC<Props> = ({ onNotify, refreshSignal, on
               { code: 'publisher', label: 'Publishers' },
               { code: 'approver', label: 'Approvers' },
               { code: 'patient', label: 'Patients' },
+              { code: 'candidate', label: 'Candidates' },
             ].map((chip) => (
               <button
                 key={chip.code}

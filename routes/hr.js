@@ -602,7 +602,10 @@ export function createHrRouter(db, broker, authenticate, upload) {
   }));
 
   // Employee Management
-  router.get('/employees', requirePermission('hr.manage'), asyncHandler(async (_req, res) => {
+  router.get('/employees', requirePermission('hr.manage'), asyncHandler(async (req, res) => {
+    const deptFilter = req.query.department_id ? Number(req.query.department_id) : null;
+    const whereClause = deptFilter ? 'WHERE ep.department_id = ?' : '';
+    const params = deptFilter ? [deptFilter] : [];
     const employees = db.all(
       `SELECT ep.*, u.user_code, u.full_name, u.email, u.phone, u.is_active, u.account_status,
               r.id as role_id, r.code as role, r.name as role_name, d.name as department_name, b.name as branch_name,
@@ -612,7 +615,9 @@ export function createHrRouter(db, broker, authenticate, upload) {
        JOIN roles r ON r.id = u.role_id
        LEFT JOIN departments d ON d.id = ep.department_id
        LEFT JOIN branches b ON b.id = ep.branch_id
-       ORDER BY ep.id ASC`
+       ${whereClause}
+       ORDER BY ep.id ASC`,
+      params
     );
     const leaves = db.all(
       `SELECT lr.*, u.full_name as employee_name, ep.employee_code

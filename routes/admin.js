@@ -9,6 +9,7 @@ import { resolveSafeUploadPath } from '../middleware/uploads.js';
 import { isStrongPassword, validateRequest } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { getAdminDashboardStats } from '../services/reports.js';
+import { hydratePrescriptionRow } from './clinical_extras.js';
 import { registerAdminMembersRoutes } from './admin_members.js';
 import { registerAdminSignupsRoutes } from './admin_signups.js';
 
@@ -114,7 +115,8 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
        ORDER BY al.id DESC LIMIT 200`
     );
     const stats = getAdminDashboardStats(db);
-    res.json({ users, roles, permissions, rolePermissions, departments, specialties, branches, settings, auditLogs, stats });
+    const categories = db.all('SELECT category_id, name, description FROM category ORDER BY category_id ASC');
+    res.json({ users, roles, permissions, rolePermissions, departments, specialties, branches, settings, auditLogs, stats, categories });
   }));
 
   router.get('/audit-logs', asyncHandler(async (req, res) => {
@@ -157,7 +159,7 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
   router.get('/finance-payroll', asyncHandler(async (_req, res) => {
     const totals = {
       totalInvoiced: Number((db.get('SELECT COALESCE(SUM(total_amount),0) as s FROM invoices').s || 0).toFixed(2)),
-      totalCollected: Number((db.get("SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE status = 'Paid'").s || 0).toFixed(2)),
+      totalCollected: Number((db.get("SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE LOWER(status) = 'paid'").s || 0).toFixed(2)),
       totalOutstanding: Number((db.get("SELECT COALESCE(SUM(balance_due),0) as s FROM invoices WHERE status IN ('Pending','Processing')").s || 0).toFixed(2)),
       totalExpenses: Number((db.get('SELECT COALESCE(SUM(amount),0) as s FROM expenses').s || 0).toFixed(2)),
       totalRefunds: Number((db.get('SELECT COALESCE(SUM(amount),0) as s FROM refunds').s || 0).toFixed(2)),
@@ -506,5 +508,237 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
     res.json({ settings: db.all('SELECT * FROM settings ORDER BY key') });
   }));
 
+  // Admin Verification / Invitation Codes Management
+  router.get('/verification-codes', asyncHandler(async (_req, res) => {
+    const codes = db.all(
+      `SELECT avc.id, avc.code_label, avc.code_label as label, avc.target_role, avc.department_id, avc.is_demo, avc.is_active,
+              avc.expires_at, avc.used_count, avc.created_at, d.name as department_name, u.full_name as created_by_name
+       FROM admin_verification_codes avc
+       LEFT JOIN departments d ON d.id = avc.department_id
+       LEFT JOIN users u ON u.id = avc.created_by
+       ORDER BY avc.id DESC`
+    );
+    res.json({ codes });
+  }));
+
+  router.post('/verification-codes', asyncHandler(async (req, res) => {
+    const rawLabel = req.body.code_label ?? req.body.label;
+    const rawValue = req.body.code_value ?? req.body.code;
+    const { target_role = 'department_admin', department_id = null, expires_at = null } = req.body;
+    if (!rawLabel || !rawValue || String(rawValue).trim().length < 6) {
+      throw new AppError(400, 'Code label and verification code (minimum 6 characters) are required.');
+    }
+    if (!['department_admin', 'admin'].includes(target_role)) {
+      throw new AppError(400, 'Target role must be department_admin or admin.');
+    }
+    const hash = bcrypt.hashSync(String(rawValue).trim(), 10);
+    const info = db.run(
+      `INSERT INTO admin_verification_codes (code_label, code_hash, target_role, department_id, is_demo, is_active, expires_at, created_by)
+       VALUES (?, ?, ?, ?, 0, 1, ?, ?)`,
+      [String(rawLabel).trim(), hash, targetRoleOrDefault(target_role), department_id ? Number(department_id) : null, expires_at || null, req.user.id]
+    );
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.verification_code_created',
+      entityType: 'admin_verification_code',
+      entityId: info.lastInsertRowid,
+      details: { code_label: String(rawLabel).trim(), target_role, department_id }
+    });
+    res.status(201).json({
+      code: db.get('SELECT id, code_label, code_label as label, target_role, department_id, is_active, expires_at, used_count, created_at FROM admin_verification_codes WHERE id = ?', [info.lastInsertRowid])
+    });
+  }));
+
+  router.delete('/verification-codes/:id', asyncHandler(async (req, res) => {
+    const cid = Number(req.params.id);
+    db.run('UPDATE admin_verification_codes SET is_active = 0 WHERE id = ?', [cid]);
+    logAudit(db, { actorUserId: req.user.id, actorRole: 'admin', action: 'admin.verification_code_revoked', entityType: 'admin_verification_code', entityId: cid });
+    res.json({ ok: true });
+  }));
+
+  // Category Management (category_id, name, description)
+  router.get('/categories', asyncHandler(async (_req, res) => {
+    const categories = db.all('SELECT category_id, name, description FROM category ORDER BY category_id ASC');
+    res.json({ categories });
+  }));
+
+  router.post('/categories', asyncHandler(async (req, res) => {
+    const rawName = req.body?.name;
+    const name = typeof rawName === 'string' ? rawName.trim() : '';
+    const description = req.body?.description === undefined || req.body?.description === null
+      ? null
+      : (String(req.body.description).trim() || null);
+
+    if (!name) throw new AppError(400, 'Category name is required.');
+    const existing = db.get('SELECT category_id FROM category WHERE LOWER(name) = LOWER(?)', [name]);
+    if (existing) throw new AppError(409, 'A category with this name already exists.');
+
+    const info = db.run('INSERT INTO category (name, description) VALUES (?, ?)', [name, description]);
+    const category = db.get('SELECT category_id, name, description FROM category WHERE category_id = ?', [info.lastInsertRowid]);
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.category_created',
+      entityType: 'category',
+      entityId: info.lastInsertRowid,
+      details: { name }
+    });
+    res.status(201).json({ category });
+  }));
+
+  router.patch('/categories/:id', asyncHandler(async (req, res) => {
+    const categoryId = Number(req.params.id);
+    const existing = db.get('SELECT category_id, name, description FROM category WHERE category_id = ?', [categoryId]);
+    if (!existing) throw new AppError(404, 'Category not found.');
+
+    const nextName = req.body?.name !== undefined ? String(req.body.name).trim() : existing.name;
+    if (!nextName) throw new AppError(400, 'Category name cannot be empty.');
+
+    const duplicate = db.get('SELECT category_id FROM category WHERE LOWER(name) = LOWER(?) AND category_id != ?', [nextName, categoryId]);
+    if (duplicate) throw new AppError(409, 'A category with this name already exists.');
+
+    const nextDescription = req.body?.description !== undefined
+      ? (req.body.description === null ? null : (String(req.body.description).trim() || null))
+      : existing.description;
+
+    db.run('UPDATE category SET name = ?, description = ? WHERE category_id = ?', [nextName, nextDescription, categoryId]);
+    const category = db.get('SELECT category_id, name, description FROM category WHERE category_id = ?', [categoryId]);
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.category_updated',
+      entityType: 'category',
+      entityId: categoryId,
+      details: { name: nextName }
+    });
+    res.json({ category });
+  }));
+
+  router.delete('/categories/:id', asyncHandler(async (req, res) => {
+    const categoryId = Number(req.params.id);
+    const existing = db.get('SELECT category_id, name FROM category WHERE category_id = ?', [categoryId]);
+    if (!existing) throw new AppError(404, 'Category not found.');
+    db.run('DELETE FROM category WHERE category_id = ?', [categoryId]);
+    logAudit(db, {
+      actorUserId: req.user.id,
+      actorRole: 'admin',
+      action: 'admin.category_deleted',
+      entityType: 'category',
+      entityId: categoryId,
+      details: { name: existing.name }
+    });
+    res.json({ ok: true });
+  }));
+
+  // Admin All Prescriptions (with date/status/search filters)
+  router.get('/prescriptions', asyncHandler(async (req, res) => {
+    const where = ['1=1'];
+    const params = [];
+    if (req.query.status && req.query.status !== 'All') {
+      where.push('LOWER(r.status) = LOWER(?)');
+      params.push(String(req.query.status).trim());
+    }
+    if (req.query.from_date) {
+      where.push('date(r.created_at) >= date(?)');
+      params.push(String(req.query.from_date));
+    }
+    if (req.query.to_date) {
+      where.push('date(r.created_at) <= date(?)');
+      params.push(String(req.query.to_date));
+    }
+    if (req.query.q && String(req.query.q).trim()) {
+      const like = `%${String(req.query.q).trim()}%`;
+      where.push(`(r.prescription_ref LIKE ? OR pu.full_name LIKE ? OR du.full_name LIKE ? OR COALESCE(r.diagnosis,'') LIKE ? OR p.patient_code LIKE ?)`);
+      params.push(like, like, like, like, like);
+    }
+
+    const rows = db.all(
+      `SELECT r.*,
+              pu.full_name as patient_name, pu.phone as patient_phone, pu.email as patient_email,
+              p.patient_code, p.dob as patient_dob, p.gender as patient_gender, p.blood_group as patient_blood_group,
+              du.full_name as doctor_name, doc.doctor_code, doc.registration_number, doc.qualification as doctor_qualification,
+              COALESCE(sp.name, 'General Medicine') as specialization,
+              d.name as department_name,
+              b.name as branch_name, b.address as branch_address, b.phone as branch_phone
+       FROM prescriptions r
+       JOIN patient_profiles p ON p.id = r.patient_id
+       JOIN users pu ON pu.id = p.user_id
+       JOIN doctor_profiles doc ON doc.id = r.doctor_id
+       JOIN users du ON du.id = doc.user_id
+       LEFT JOIN specialties sp ON sp.id = doc.specialty_id
+       LEFT JOIN departments d ON d.id = doc.department_id
+       LEFT JOIN branches b ON b.id = doc.branch_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY r.id DESC LIMIT 300`,
+      params
+    );
+    res.json({ prescriptions: rows.map((row) => hydratePrescriptionRow(db, row)) });
+  }));
+
+  // Admin All Payments & Bills (with date/status/bill_type/search filters)
+  router.get('/payments', asyncHandler(async (req, res) => {
+    const where = ['1=1'];
+    const params = [];
+    if (req.query.status && req.query.status !== 'All') {
+      where.push('LOWER(p.status) = LOWER(?)');
+      params.push(String(req.query.status).trim());
+    }
+    if (req.query.bill_type && req.query.bill_type !== 'All') {
+      where.push('LOWER(p.bill_type) = LOWER(?)');
+      params.push(String(req.query.bill_type).trim());
+    }
+    if (req.query.from_date) {
+      where.push('date(p.created_at) >= date(?)');
+      params.push(String(req.query.from_date));
+    }
+    if (req.query.to_date) {
+      where.push('date(p.created_at) <= date(?)');
+      params.push(String(req.query.to_date));
+    }
+    if (req.query.q && String(req.query.q).trim()) {
+      const like = `%${String(req.query.q).trim()}%`;
+      where.push(`(p.payment_ref LIKE ? OR p.receipt_number LIKE ? OR COALESCE(p.transaction_id,'') LIKE ? OR COALESCE(p.description,'') LIKE ? OR pu.full_name LIKE ? OR pat.patient_code LIKE ?)`);
+      params.push(like, like, like, like, like, like);
+    }
+
+    const payments = db.all(
+      `SELECT p.*,
+              i.invoice_number, i.description as invoice_description, i.total_amount as invoice_total,
+              pu.full_name as patient_name, pu.email as patient_email, pu.phone as patient_phone,
+              pat.patient_code,
+              cu.full_name as created_by_name, vu.full_name as verified_by_name
+       FROM payments p
+       JOIN invoices i ON i.id = p.invoice_id
+       JOIN patient_profiles pat ON pat.id = p.patient_id
+       JOIN users pu ON pu.id = pat.user_id
+       LEFT JOIN users cu ON cu.id = COALESCE(p.created_by, p.recorded_by)
+       LEFT JOIN users vu ON vu.id = p.verified_by
+       WHERE ${where.join(' AND ')}
+       ORDER BY p.id DESC LIMIT 300`,
+      params
+    ).map((r) => ({
+      ...r,
+      status: String(r.status || 'pending').toLowerCase(),
+      payment_method: r.payment_method || r.method || 'UPI QR',
+      description: r.description || r.invoice_description || 'Hospital Bill',
+      items: db.all('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC', [r.invoice_id])
+    }));
+
+    const summary = {
+      totalCount: payments.length,
+      paidTotal: Number(payments.filter((p) => p.status === 'paid').reduce((s, p) => s + Number(p.amount || 0), 0).toFixed(2)),
+      pendingTotal: Number(payments.filter((p) => p.status === 'pending').reduce((s, p) => s + Number(p.amount || 0), 0).toFixed(2)),
+      verificationPendingTotal: Number(payments.filter((p) => p.status === 'verification_pending').reduce((s, p) => s + Number(p.amount || 0), 0).toFixed(2)),
+      failedTotal: Number(payments.filter((p) => p.status === 'failed').reduce((s, p) => s + Number(p.amount || 0), 0).toFixed(2))
+    };
+
+    res.json({ payments, summary });
+  }));
+
   return router;
+}
+
+function targetRoleOrDefault(role) {
+  return role === 'admin' ? 'admin' : 'department_admin';
 }

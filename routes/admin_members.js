@@ -412,4 +412,72 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
       createdUsers
     });
   }));
+
+  router.post('/admins', asyncHandler(async (req, res) => {
+    const {
+      full_name = '',
+      email = '',
+      phone = '',
+      password = '',
+      department_id = null,
+      branch_id = 1,
+      designation = 'Hospital Administrator'
+    } = req.body || {};
+
+    const cleanName = String(full_name).trim();
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanPhone = String(phone).trim();
+    if (cleanName.length < 2) throw new AppError(400, 'Full name is required.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new AppError(400, 'Valid email address is required.');
+    if (!isStrongPassword(password)) throw new AppError(400, 'Password must be at least 8 characters and include a number.');
+
+    const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [cleanEmail]);
+    if (dup) throw new AppError(409, 'An account with this email address already exists.');
+
+    const adminRole = db.get("SELECT id, code, name FROM roles WHERE code = 'admin'");
+    if (!adminRole) throw new AppError(500, 'Admin role configuration missing.');
+
+    const admDept = department_id
+      ? db.get('SELECT id, branch_id FROM departments WHERE id = ?', [Number(department_id)])
+      : db.get("SELECT id, branch_id FROM departments WHERE name = 'Administration'") || db.get('SELECT id, branch_id FROM departments ORDER BY id LIMIT 1');
+
+    const userCode = `ADM-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
+    const hash = bcrypt.hashSync(password, 10);
+
+    const createdId = db.transaction(() => {
+      const uInfo = db.run(
+        `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+        [userCode, cleanEmail, hash, cleanName, cleanPhone, adminRole.id, Number(branch_id || admDept?.branch_id || 1), admDept?.id || null]
+      );
+      db.run(
+        `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, employment_status, base_salary)
+         VALUES (?, ?, ?, ?, ?, date('now'), 'Active', 0)`,
+        [uInfo.lastInsertRowid, `EMP-${userCode}`, admDept?.id || null, Number(branch_id || admDept?.branch_id || 1), String(designation || 'Hospital Administrator').trim()]
+      );
+      logAudit(db, {
+        actorUserId: req.user.id,
+        actorRole: 'admin',
+        action: 'admin.admin_created',
+        entityType: 'user',
+        entityId: uInfo.lastInsertRowid,
+        details: JSON.stringify({ email: cleanEmail, user_code: userCode })
+      });
+      return uInfo.lastInsertRowid;
+    })();
+
+    const adminUser = db.get(
+      `SELECT u.id, u.user_code, u.email, u.full_name, u.phone, u.is_active, u.account_status,
+              u.created_at, r.code as role, r.name as role_name, u.department_id, d.name as department_name
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN departments d ON d.id = u.department_id
+       WHERE u.id = ?`,
+      [createdId]
+    );
+    if (broker) {
+      broker.publish('member:registered', { userId: createdId, title: 'New Admin Created', message: `${cleanName} added as Administrator.` }, { roles: ['admin'] });
+    }
+    res.status(201).json({ admin: adminUser, message: `Administrator account created for ${cleanName}.` });
+  }));
 }

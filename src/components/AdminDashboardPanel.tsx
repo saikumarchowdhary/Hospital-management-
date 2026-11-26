@@ -11,6 +11,8 @@ import {
   X,
   Eye,
   Save,
+  KeyRound,
+  Trash2,
 } from 'lucide-react';
 import { apiRequest, getAccessToken } from '../lib/api';
 
@@ -45,16 +47,31 @@ export const AdminDashboardPanel: React.FC<Props> = ({ section, onNotify, refres
   // Preview doc
   const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; mime: string } | null>(null);
   const [confirmToggle, setConfirmToggle] = useState<{ kind: 'department' | 'branch'; item: any } | null>(null);
+  const [verificationCodes, setVerificationCodes] = useState<any[]>([]);
+  const [inviteForm, setInviteForm] = useState({ label: 'Department Admin Invitation', code: '', target_role: 'department_admin', department_id: '' });
+
+  // Category CRUD states (category table: category_id, name, description)
+  const [categories, setCategories] = useState<Array<{ category_id: number; name: string; description: string | null }>>([]);
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<{ category_id: number; name: string; description: string | null } | null>(null);
+  const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
+  const [confirmDeleteCategory, setConfirmDeleteCategory] = useState<{ category_id: number; name: string } | null>(null);
 
   const loadSectionData = async () => {
     try {
       const ov = await apiRequest('/api/admin/overview');
       setDepartments(ov.departments || []);
       setBranches(ov.branches || []);
+      setCategories(ov.categories || []);
       setStaffUsers((ov.users || []).filter((u: any) => u.is_staff && u.account_status === 'Active'));
       const sMap: Record<string, string> = {};
       for (const s of ov.settings || []) sMap[s.key] = s.value;
       setSettingsMap(sMap);
+
+      if (section === 'admin_settings') {
+        const codesRes = await apiRequest('/api/admin/verification-codes').catch(() => ({ codes: [] }));
+        setVerificationCodes(codesRes.codes || []);
+      }
 
       if (section === 'finance_payroll') {
         const fin = await apiRequest('/api/admin/finance-payroll');
@@ -196,6 +213,46 @@ export const AdminDashboardPanel: React.FC<Props> = ({ section, onNotify, refres
       onDataChanged();
     } catch (err: any) {
       onNotify(err.message || 'Failed saving settings.', 'error');
+    }
+  };
+
+  const handleSaveCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        name: categoryForm.name.trim(),
+        description: categoryForm.description.trim() || null,
+      };
+      if (editingCategory) {
+        await apiRequest(`/api/admin/categories/${editingCategory.category_id}`, {
+          method: 'PATCH',
+          body: payload,
+        });
+        onNotify(`Category "${payload.name}" updated.`, 'success');
+      } else {
+        await apiRequest('/api/admin/categories', {
+          method: 'POST',
+          body: payload,
+        });
+        onNotify(`Category "${payload.name}" created.`, 'success');
+      }
+      setCategoryModalOpen(false);
+      loadSectionData();
+      onDataChanged();
+    } catch (err: any) {
+      onNotify(err.message || 'Category save failed.', 'error');
+    }
+  };
+
+  const handleDeleteCategory = async (categoryId: number, name: string) => {
+    try {
+      await apiRequest(`/api/admin/categories/${categoryId}`, { method: 'DELETE' });
+      onNotify(`Category "${name}" deleted.`, 'success');
+      setConfirmDeleteCategory(null);
+      loadSectionData();
+      onDataChanged();
+    } catch (err: any) {
+      onNotify(err.message || 'Category delete failed.', 'error');
     }
   };
 
@@ -399,6 +456,129 @@ export const AdminDashboardPanel: React.FC<Props> = ({ section, onNotify, refres
                   className={`flex-1 py-2 text-white rounded-xl font-semibold ${confirmToggle.item.is_active ? 'bg-rose-600' : 'bg-emerald-600'}`}
                 >
                   Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Service & Complaint Categories (category table: category_id, name, description) */}
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Hospital Service & Complaint Categories</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Structured master categories (`category_id`, `name`, `description`) with unique name enforcement.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingCategory(null);
+                setCategoryForm({ name: '', description: '' });
+                setCategoryModalOpen(true);
+              }}
+              className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Category
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-semibold uppercase">
+                  <th className="p-4">Category ID</th>
+                  <th className="p-4">Name</th>
+                  <th className="p-4">Description</th>
+                  <th className="p-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {categories.map((cat) => (
+                  <tr key={cat.category_id} className="hover:bg-slate-50/70">
+                    <td className="p-4 font-mono font-bold text-blue-700">#{cat.category_id}</td>
+                    <td className="p-4 font-bold text-slate-900">{cat.name}</td>
+                    <td className="p-4 text-slate-600">{cat.description || <span className="text-slate-400 italic">No description</span>}</td>
+                    <td className="p-4 text-right space-x-1 whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCategory(cat);
+                          setCategoryForm({ name: cat.name, description: cat.description || '' });
+                          setCategoryModalOpen(true);
+                        }}
+                        className="px-2.5 py-1 bg-slate-100 hover:bg-indigo-50 text-slate-700 rounded-lg font-semibold inline-flex items-center gap-1"
+                      >
+                        <Edit3 className="w-3 h-3" /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteCategory({ category_id: cat.category_id, name: cat.name })}
+                        className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg font-semibold inline-flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3" /> Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {categories.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="p-6 text-center text-slate-400">No categories configured yet.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {categoryModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+            <form onSubmit={handleSaveCategory} className="bg-white rounded-2xl max-w-md w-full p-6 space-y-3 text-xs">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-base">{editingCategory ? `Edit Category #${editingCategory.category_id}` : 'Add Category'}</h3>
+                <button type="button" onClick={() => setCategoryModalOpen(false)}><X className="w-5 h-5 text-slate-400" /></button>
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-600 mb-1">Category Name *</label>
+                <input
+                  required
+                  value={categoryForm.name}
+                  onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
+                  placeholder="e.g. Emergency Triage"
+                  className="w-full px-3 py-2 bg-slate-100 rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-600 mb-1">Description (Optional)</label>
+                <textarea
+                  rows={3}
+                  value={categoryForm.description}
+                  onChange={(e) => setCategoryForm({ ...categoryForm, description: e.target.value })}
+                  placeholder="Optional details about this category..."
+                  className="w-full px-3 py-2 bg-slate-100 rounded-xl"
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setCategoryModalOpen(false)} className="flex-1 py-2 bg-slate-100 rounded-xl font-semibold">Cancel</button>
+                <button type="submit" className="flex-1 py-2 bg-blue-600 text-white rounded-xl font-semibold">Save Category</button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {confirmDeleteCategory && (
+          <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 text-xs">
+              <h3 className="font-bold text-base text-slate-900">Delete Category?</h3>
+              <p className="text-slate-600">
+                Confirm permanently deleting <strong>{confirmDeleteCategory.name}</strong> (#{confirmDeleteCategory.category_id}).
+              </p>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setConfirmDeleteCategory(null)} className="flex-1 py-2 bg-slate-100 rounded-xl font-semibold">Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteCategory(confirmDeleteCategory.category_id, confirmDeleteCategory.name)}
+                  className="flex-1 py-2 bg-rose-600 text-white rounded-xl font-semibold"
+                >
+                  Confirm Delete
                 </button>
               </div>
             </div>
@@ -759,6 +939,116 @@ export const AdminDashboardPanel: React.FC<Props> = ({ section, onNotify, refres
           </div>
         </div>
       )}
+
+      {/* Production Admin Verification / Invitation Codes Management */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-slate-800" />
+            <div>
+              <h3 className="font-bold text-sm text-slate-900">Admin Registration Invitation Codes</h3>
+              <p className="text-xs text-slate-500">Issue hashed backend verification codes for secure Department Admin and Super Admin onboarding.</p>
+            </div>
+          </div>
+        </div>
+
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              await apiRequest('/api/admin/verification-codes', {
+                method: 'POST',
+                body: {
+                  label: inviteForm.label,
+                  code: inviteForm.code,
+                  target_role: inviteForm.target_role,
+                  department_id: inviteForm.department_id ? Number(inviteForm.department_id) : null,
+                },
+              });
+              onNotify('Admin invitation code created and hashed.', 'success');
+              setInviteForm({ label: 'Department Admin Invitation', code: '', target_role: 'department_admin', department_id: '' });
+              loadSectionData();
+            } catch (err: any) {
+              onNotify(err.message || 'Could not create invitation code.', 'error');
+            }
+          }}
+          className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs"
+        >
+          <input
+            required
+            placeholder="Label (e.g. Cardiology Admin)"
+            value={inviteForm.label}
+            onChange={(e) => setInviteForm({ ...inviteForm, label: e.target.value })}
+            className="px-3 py-2 bg-slate-100 rounded-xl"
+          />
+          <input
+            required
+            minLength={6}
+            placeholder="Invitation Code (min 6 chars)"
+            value={inviteForm.code}
+            onChange={(e) => setInviteForm({ ...inviteForm, code: e.target.value })}
+            className="px-3 py-2 bg-slate-100 rounded-xl font-mono"
+          />
+          <select
+            value={inviteForm.target_role}
+            onChange={(e) => setInviteForm({ ...inviteForm, target_role: e.target.value })}
+            className="px-3 py-2 bg-slate-100 rounded-xl font-semibold"
+          >
+            <option value="department_admin">Department Admin</option>
+            <option value="admin">Super Admin</option>
+          </select>
+          <select
+            value={inviteForm.department_id}
+            onChange={(e) => setInviteForm({ ...inviteForm, department_id: e.target.value })}
+            className="px-3 py-2 bg-slate-100 rounded-xl"
+          >
+            <option value="">Any Department</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+          <button type="submit" className="px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold inline-flex items-center justify-center gap-1">
+            <Plus className="w-3.5 h-3.5" /> Issue Code
+          </button>
+        </form>
+
+        <div className="space-y-2">
+          {verificationCodes.map((vc) => (
+            <div key={vc.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 flex items-center justify-between text-xs">
+              <div>
+                <div className="font-bold text-slate-900">
+                  {vc.label} · <span className="font-mono text-indigo-700">{vc.target_role}</span>
+                </div>
+                <div className="text-slate-500">
+                  {vc.department_name || 'All Departments'} · Issued by {vc.created_by_name || 'Admin'} · Status: {vc.is_active ? 'Active' : 'Revoked'}
+                </div>
+              </div>
+              {vc.is_active ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await apiRequest(`/api/admin/verification-codes/${vc.id}`, { method: 'DELETE' });
+                      onNotify('Invitation code revoked.', 'success');
+                      loadSectionData();
+                    } catch (err: any) {
+                      onNotify(err.message || 'Revoke failed.', 'error');
+                    }
+                  }}
+                  className="px-2.5 py-1 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg font-semibold inline-flex items-center gap-1"
+                >
+                  <Trash2 className="w-3 h-3" /> Revoke
+                </button>
+              ) : (
+                <span className="text-slate-400 font-semibold">Revoked</span>
+              )}
+            </div>
+          ))}
+          {verificationCodes.length === 0 && (
+            <p className="text-xs text-slate-400">No custom invitation codes issued yet.</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

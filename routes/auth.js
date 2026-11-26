@@ -18,6 +18,39 @@ function issueSessionTokens(userId, roleCode, jwtSecret, remember = true) {
   return { accessToken, refreshToken, expiresAt: Date.now() + accessTtlSec * 1000 };
 }
 
+function isDemoVerificationEnabled() {
+  return process.env.NODE_ENV !== 'production' && !(process.env.ADMIN_INVITE_CODE || '').trim();
+}
+
+function verifyAdminInvitationCode(db, submittedCode, departmentId = null) {
+  const raw = String(submittedCode || '').trim();
+  if (!raw) return { ok: false };
+  const envCode = (process.env.ADMIN_INVITE_CODE || '').trim();
+  if (envCode) {
+    const a = Buffer.from(raw);
+    const b = Buffer.from(envCode);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+      return { ok: true, mode: 'env' };
+    }
+  }
+  const rows = db.all(
+    `SELECT * FROM admin_verification_codes
+     WHERE is_active = 1
+       AND (expires_at IS NULL OR datetime(expires_at) >= datetime('now'))`
+  );
+  for (const row of rows) {
+    if (process.env.NODE_ENV === 'production' && row.is_demo) continue;
+    if (row.department_id && departmentId && Number(row.department_id) !== Number(departmentId)) continue;
+    if (bcrypt.compareSync(raw, row.code_hash)) {
+      return { ok: true, mode: 'db', codeId: row.id };
+    }
+  }
+  if (isDemoVerificationEnabled() && raw === ['ADMIN', '123'].join('')) {
+    return { ok: true, mode: 'demo' };
+  }
+  return { ok: false };
+}
+
 export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upload = null) {
   const router = express.Router();
   const limiter = createLoginRateLimiter();
@@ -106,10 +139,18 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
   router.get('/registration-meta', (_req, res) => {
     const roles = db.all('SELECT id, code, name, is_staff FROM roles ORDER BY id')
       .filter((r) => SELF_REGISTER_STAFF_ROLES.includes(r.code));
-    const departments = db.all('SELECT id, name, category FROM departments WHERE is_active = 1 ORDER BY name');
+    const departments = db.all('SELECT id, code, name, category, branch_id FROM departments WHERE is_active = 1 ORDER BY name');
     const branches = db.all('SELECT id, code, name FROM branches WHERE is_active = 1 ORDER BY id');
     const specialties = db.all('SELECT id, name, department_id FROM specialties ORDER BY name');
-    res.json({ staffRoles: roles, departments, branches, specialties });
+    const demoMode = isDemoVerificationEnabled();
+    res.json({
+      staffRoles: roles,
+      departments,
+      branches,
+      specialties,
+      isDemoVerificationMode: demoMode,
+      demoAdminVerificationLabel: demoMode ? 'ADMIN 123' : null
+    });
   });
 
   router.post(
@@ -189,8 +230,9 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
          JOIN roles r ON r.id = u.role_id
          LEFT JOIN departments d ON d.id = u.department_id
          LEFT JOIN branches b ON b.id = u.branch_id
-         WHERE lower(u.email) = lower(?) OR upper(u.user_code) = upper(?)`,
-        [identifier, identifier]
+         LEFT JOIN employee_profiles ep ON ep.user_id = u.id
+         WHERE lower(u.email) = lower(?) OR upper(u.user_code) = upper(?) OR upper(ep.employee_code) = upper(?)`,
+        [identifier, identifier, identifier]
       );
 
       if (!user) return res.status(401).json({ error: 'Invalid credentials.' });
@@ -237,20 +279,39 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
           account_status: user.account_status || 'Pending Approval'
         });
       }
-      if (expected_role && user.role !== expected_role) {
+      const normalizedExpectedRole = expected_role === 'super_admin' ? 'admin' : expected_role;
+      const isTargetingAdminPortal =
+        expected_portal === 'admin' || expected_portal === 'super_admin' || normalizedExpectedRole === 'admin';
+      if (isTargetingAdminPortal && user.role !== 'admin') {
+        clearAuthCookie(req, res);
+        logAudit(db, {
+          actorUserId: user.id,
+          actorRole: user.role,
+          action: 'auth.admin_access_denied',
+          entityType: 'user',
+          entityId: user.id,
+          ip: req.ip
+        });
+        return res.status(403).json({ error: 'You do not have admin access.' });
+      }
+      if (normalizedExpectedRole && user.role !== normalizedExpectedRole) {
         return res.status(403).json({ error: `Account belongs to "${user.role_name}". Switch to the ${user.role_name} portal to sign in.` });
       }
       if (expected_portal) {
         const CLINICAL_OPS_STAFF_ROLES = [
           'doctor', 'nurse', 'receptionist', 'lab_staff', 'radiologist',
           'pharmacist', 'accountant', 'case_manager', 'housekeeping',
-          'bloodbank_staff', 'external_coordinator'
+          'housekeeping_supervisor', 'bloodbank_staff', 'external_coordinator'
         ];
         const HR_PUB_ROLES = ['hr', 'publisher', 'approver'];
         const portalAllowed =
           (expected_portal === 'patient' && (user.role === 'patient' || user.role === 'candidate')) ||
           (expected_portal === 'staff' && CLINICAL_OPS_STAFF_ROLES.includes(user.role)) ||
-          (expected_portal === 'admin' && user.role === 'admin') ||
+          ((expected_portal === 'admin' || expected_portal === 'super_admin') && user.role === 'admin') ||
+          (expected_portal === 'department_admin' && user.role === 'department_admin') ||
+          (expected_portal === 'hr' && user.role === 'hr') ||
+          (expected_portal === 'publisher' && user.role === 'publisher') ||
+          (expected_portal === 'approver' && user.role === 'approver') ||
           (expected_portal === 'hr_publisher' && HR_PUB_ROLES.includes(user.role));
         if (!portalAllowed) {
           return res.status(403).json({
@@ -299,8 +360,8 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       const accType = String(req.body.account_type || '').toLowerCase();
       const reqRole = String(req.body.requested_role || req.body.role || '').toLowerCase();
 
-      if (accType === 'admin' || reqRole === 'admin') {
-        throw new AppError(403, 'Administrator accounts cannot be created via public sign-up. Please contact hospital administration.');
+      if (['admin', 'super_admin', 'department_admin'].includes(accType) || ['admin', 'department_admin'].includes(reqRole)) {
+        throw new AppError(403, 'Administrator accounts cannot self-register. Only an existing administrator can create admin accounts.');
       }
 
       if (accType === 'doctor' || reqRole === 'doctor') {
@@ -401,6 +462,150 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
         user: hydratedUser
       });
     })
+  );
+
+  function handleAdminOrHrRegistration(dbRef, secret, eventBroker, req, res, verifiedCodeInfo = null) {
+    const {
+      full_name,
+      email,
+      mobile,
+      employee_id,
+      department_id,
+      designation,
+      password,
+      confirm_password,
+      account_type = 'department_admin',
+      admin_scope = '',
+      verification_code = ''
+    } = req.body;
+
+    if (!full_name || String(full_name).trim().length < 2) throw new AppError(400, 'Full name is required.');
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) throw new AppError(400, 'Valid email address is required.');
+    if (!mobile || String(mobile).trim().length < 6) throw new AppError(400, 'Valid mobile number is required.');
+    if (!employee_id || String(employee_id).trim().length < 2) throw new AppError(400, 'Employee ID is required.');
+    if (!department_id) throw new AppError(400, 'Department selection is required.');
+    if (!designation || String(designation).trim().length < 2) throw new AppError(400, 'Designation is required.');
+    if (!isStrongPassword(password)) throw new AppError(400, 'Password must be at least 8 characters and include at least one number.');
+    if (confirm_password !== undefined && password !== confirm_password) {
+      throw new AppError(400, 'Passwords do not match.');
+    }
+
+    const normType = String(account_type || '').trim().toLowerCase();
+    const normScope = String(admin_scope || '').trim().toLowerCase();
+    if (!['admin', 'super_admin', 'department_admin', 'hr'].includes(normType)) {
+      throw new AppError(400, 'Account type must be Admin or HR.');
+    }
+
+    const deptIdNum = Number(department_id);
+    const dept = dbRef.get('SELECT * FROM departments WHERE id = ? AND is_active = 1', [deptIdNum]);
+    if (!dept) throw new AppError(400, 'Selected department does not exist or is inactive.');
+
+    let targetRoleCode = 'hr';
+    if (normType !== 'hr') {
+      const verified = verifiedCodeInfo || verifyAdminInvitationCode(dbRef, verification_code, dept.id);
+      if (!verified.ok) {
+        logAudit(dbRef, {
+          actorUserId: null,
+          actorRole: 'anonymous',
+          action: 'auth.admin_verification_failed',
+          entityType: 'registration',
+          entityId: String(email).trim().toLowerCase(),
+          details: JSON.stringify({ account_type: normType, department_id: dept.id }),
+          ip: req.ip
+        });
+        throw new AppError(403, 'Invalid Admin Verification Code.');
+      }
+      verifiedCodeInfo = verified;
+      if (normType === 'super_admin' || normScope === 'super_admin') {
+        targetRoleCode = 'admin';
+      } else if (normType === 'department_admin' || normScope === 'department_admin') {
+        targetRoleCode = 'department_admin';
+      } else {
+        targetRoleCode = 'admin';
+      }
+    }
+
+    const safeEmail = String(email).trim().toLowerCase();
+    const safeMobile = String(mobile).trim();
+    const safeEmpId = String(employee_id).trim();
+
+    if (dbRef.get('SELECT id FROM users WHERE lower(email) = lower(?)', [safeEmail])) {
+      throw new AppError(409, 'An account with this email address already exists.');
+    }
+    if (
+      dbRef.get('SELECT id FROM employee_profiles WHERE upper(employee_code) = upper(?)', [safeEmpId]) ||
+      dbRef.get("SELECT id FROM staff_signup_requests WHERE upper(employee_id) = upper(?) AND status NOT IN ('Rejected','Withdrawn')", [safeEmpId])
+    ) {
+      throw new AppError(409, 'This Employee ID is already registered.');
+    }
+
+    const roleRow = dbRef.get('SELECT id, code, name FROM roles WHERE code = ?', [targetRoleCode]);
+    if (!roleRow) throw new AppError(500, `Role configuration missing for ${targetRoleCode}.`);
+
+    const prefix = targetRoleCode === 'admin' ? 'ADM' : targetRoleCode === 'department_admin' ? 'DADM' : 'HR';
+    const userCode = `${prefix}-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
+    const hash = bcrypt.hashSync(password, 10);
+
+    const createdId = dbRef.transaction(() => {
+      const uInfo = dbRef.run(
+        `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+        [userCode, safeEmail, hash, String(full_name).trim(), safeMobile, roleRow.id, dept.branch_id || 1, dept.id]
+      );
+      dbRef.run(
+        `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, employment_status, base_salary)
+         VALUES (?, ?, ?, ?, ?, date('now'), 'Active', ?)`,
+        [uInfo.lastInsertRowid, safeEmpId, dept.id, dept.branch_id || 1, String(designation).trim(), targetRoleCode === 'hr' ? 5800 : 7500]
+      );
+      if (verifiedCodeInfo?.codeId) {
+        dbRef.run('UPDATE admin_verification_codes SET used_count = used_count + 1 WHERE id = ?', [verifiedCodeInfo.codeId]);
+      }
+      logAudit(dbRef, {
+        actorUserId: uInfo.lastInsertRowid,
+        actorRole: targetRoleCode,
+        action: targetRoleCode === 'hr' ? 'auth.hr_registered' : `auth.${targetRoleCode}_registered`,
+        entityType: 'user',
+        entityId: uInfo.lastInsertRowid,
+        details: JSON.stringify({ role: targetRoleCode, department_id: dept.id, department_name: dept.name, employee_code: safeEmpId }),
+        ip: req.ip
+      });
+      return uInfo.lastInsertRowid;
+    })();
+
+    createNotification(dbRef, eventBroker, {
+      roles: ['admin'],
+      title: `New ${roleRow.name} Account Created`,
+      message: `${String(full_name).trim()} (${safeEmpId}) registered in ${dept.name}.`,
+      eventType: 'member:registered'
+    });
+
+    const { accessToken, refreshToken, expiresAt } = issueSessionTokens(createdId, targetRoleCode, secret, true);
+    setAuthCookie(req, res, accessToken, true, refreshToken);
+    const hydratedUser = hydrateAuthenticatedUser(dbRef, createdId);
+    return res.status(201).json({
+      token: accessToken,
+      accessToken,
+      refreshToken,
+      expiresAt,
+      message: `${roleRow.name} account created for ${dept.name}.`,
+      user: hydratedUser
+    });
+  }
+
+  router.post(
+    '/register-admin-hr',
+    limiter,
+    [
+      body('full_name').trim().isLength({ min: 2 }).withMessage('Full name is required.'),
+      body('email').isEmail().normalizeEmail().withMessage('Valid email address is required.'),
+      body('mobile').trim().isLength({ min: 6 }).withMessage('Valid mobile number is required.'),
+      body('employee_id').trim().isLength({ min: 2 }).withMessage('Employee ID is required.'),
+      body('department_id').notEmpty().withMessage('Department selection is required.'),
+      body('designation').trim().isLength({ min: 2 }).withMessage('Designation is required.'),
+      body('password').custom(isStrongPassword).withMessage('Password must be at least 8 characters and include at least one number.')
+    ],
+    validateRequest,
+    asyncHandler(async (req, res) => handleAdminOrHrRegistration(db, jwtSecret, broker, req, res))
   );
 
   router.post('/forgot-password', limiter, [body('email').isEmail().withMessage('Valid email is required.')], validateRequest, asyncHandler(async (req, res) => {

@@ -53,7 +53,21 @@ class DatabaseAdapter {
 
 export function createDatabase(customPath) {
   const targetPath = customPath || process.env.HMS_DB_PATH || path.join(process.cwd(), 'data', 'hms.db');
-  return new DatabaseAdapter(targetPath);
+  try {
+    const adapter = new DatabaseAdapter(targetPath);
+    adapter.get('PRAGMA integrity_check');
+    return adapter;
+  } catch (err) {
+    if (targetPath !== ':memory:' && (String(err).includes('malformed') || String(err).includes('corrupt') || String(err).includes('no such table') || String(err).includes('SQLITE_CORRUPT'))) {
+      try {
+        if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+        if (fs.existsSync(targetPath + '-wal')) fs.unlinkSync(targetPath + '-wal');
+        if (fs.existsSync(targetPath + '-shm')) fs.unlinkSync(targetPath + '-shm');
+      } catch {}
+      return new DatabaseAdapter(targetPath);
+    }
+    throw err;
+  }
 }
 
 export default DatabaseAdapter;

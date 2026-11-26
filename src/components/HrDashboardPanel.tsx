@@ -37,6 +37,7 @@ export const HrDashboardPanel: React.FC<Props> = ({ onNotify, refreshSignal, ini
   const [reportsData, setReportsData] = useState<any>(null);
 
   const [empQuery, setEmpQuery] = useState('');
+  const [empDeptFilter, setEmpDeptFilter] = useState('all');
   const [appStatusFilter, setAppStatusFilter] = useState('all');
   const [empPage, setEmpPage] = useState(1);
   const [appPage, setAppPage] = useState(1);
@@ -165,10 +166,12 @@ export const HrDashboardPanel: React.FC<Props> = ({ onNotify, refreshSignal, ini
   const filteredEmployees = useMemo(() => {
     const q = empQuery.trim().toLowerCase();
     return (employeesData.employees || []).filter((e: any) => {
+      const matchesDept = empDeptFilter === 'all' || String(e.department_id || '') === empDeptFilter;
+      if (!matchesDept) return false;
       if (!q) return true;
       return `${e.full_name} ${e.employee_code} ${e.email} ${e.department_name || ''} ${e.designation}`.toLowerCase().includes(q);
     });
-  }, [employeesData.employees, empQuery]);
+  }, [employeesData.employees, empQuery, empDeptFilter]);
 
   const filteredApplications = useMemo(() => {
     return applications.filter((a) => appStatusFilter === 'all' || a.status === appStatusFilter);
@@ -176,7 +179,7 @@ export const HrDashboardPanel: React.FC<Props> = ({ onNotify, refreshSignal, ini
 
   useEffect(() => {
     setEmpPage(1);
-  }, [empQuery]);
+  }, [empQuery, empDeptFilter]);
 
   useEffect(() => {
     setAppPage(1);
@@ -605,6 +608,19 @@ export const HrDashboardPanel: React.FC<Props> = ({ onNotify, refreshSignal, ini
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input value={empQuery} onChange={(e) => setEmpQuery(e.target.value)} placeholder="Search employee name, ID, role, department..." className="w-full pl-9 pr-3 py-2 bg-slate-100 rounded-xl text-xs" />
               </div>
+              <select
+                value={empDeptFilter}
+                onChange={(e) => setEmpDeptFilter(e.target.value)}
+                aria-label="Filter employees by department"
+                className="px-3 py-2 bg-slate-100 rounded-xl text-xs font-semibold text-slate-700"
+              >
+                <option value="all">All Departments ({(employeesData.employees || []).length})</option>
+                {(employeesData.departments || []).map((d: any) => (
+                  <option key={d.id} value={String(d.id)}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
               <button onClick={handleRunPayroll} className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold">
                 Run Current Month Payroll
               </button>

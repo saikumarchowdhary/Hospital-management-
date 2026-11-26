@@ -78,6 +78,7 @@ export function csrfProtect(req, res, next) {
   const publicAuthPaths = [
     '/api/auth/login',
     '/api/auth/register',
+    '/api/auth/register-admin-hr',
     '/api/auth/refresh',
     '/api/auth/forgot-password',
     '/api/auth/reset-password',
@@ -142,9 +143,10 @@ export function hydrateAuthenticatedUser(db, userId) {
     user.schedule_configured = doc ? Boolean(doc.schedule_configured) : false;
   }
   if (user.is_staff) {
-    const emp = db.get('SELECT id, employee_code FROM employee_profiles WHERE user_id = ?', [user.id]);
+    const emp = db.get('SELECT id, employee_code, designation FROM employee_profiles WHERE user_id = ?', [user.id]);
     user.employee_id = emp ? emp.id : null;
     user.employee_code = emp ? emp.employee_code : null;
+    user.designation = emp ? emp.designation : null;
   }
   return user;
 }

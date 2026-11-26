@@ -12,6 +12,7 @@ import { errorHandler } from './middleware/errors.js';
 import { createUploadMiddleware } from './middleware/uploads.js';
 import { createAdminRouter } from './routes/admin.js';
 import { createAdmissionsRouter } from './routes/admissions.js';
+import { createDepartmentAdminRouter } from './routes/department_admin.js';
 import { createAppointmentsRouter } from './routes/appointments.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createBedsRouter } from './routes/beds.js';
@@ -85,6 +86,29 @@ export function createHmsApp(options = {}) {
     res.json({ status: 'ok', service: 'MediCore HMS', timestamp: new Date().toISOString() });
   });
 
+  app.get('/api/prescriptions/verify/:ref', (req, res) => {
+    const ref = String(req.params.ref || '').trim();
+    if (!ref) {
+      return res.status(400).json({ valid: false, error: 'Prescription reference is required.' });
+    }
+    const row = db.get(
+      `SELECT r.id, r.prescription_ref, r.status, r.created_at,
+              du.full_name as doctor_name, COALESCE(sp.name, 'General Medicine') as specialization,
+              doc.registration_number, COALESCE(b.name, ?) as hospital_name
+       FROM prescriptions r
+       JOIN doctor_profiles doc ON doc.id = r.doctor_id
+       JOIN users du ON du.id = doc.user_id
+       LEFT JOIN specialties sp ON sp.id = doc.specialty_id
+       LEFT JOIN branches b ON b.id = doc.branch_id
+       WHERE upper(r.prescription_ref) = upper(?)`,
+      [process.env.HOSPITAL_NAME || 'CareLine HMS', ref]
+    );
+    if (!row) {
+      return res.status(404).json({ valid: false, error: 'Prescription not found or invalid verification code.' });
+    }
+    return res.json({ valid: true, verification: row });
+  });
+
   app.get('/api/demo-accounts', (_req, res) => {
     const isVisible =
       process.env.NODE_ENV !== 'production' &&
@@ -150,7 +174,7 @@ export function createHmsApp(options = {}) {
       },
       {
         name: 'Admin',
-        accounts: allAccounts.filter((a) => a.role === 'admin')
+        accounts: allAccounts.filter((a) => ['admin', 'department_admin'].includes(a.role))
       },
       {
         name: 'Candidate',
@@ -183,7 +207,12 @@ export function createHmsApp(options = {}) {
   app.use('/api/integrations', createIntegrationsRouter(db, broker, authenticate));
   app.use('/api', createNotificationsRouter(db, broker, authenticate));
   app.use('/api/reports', createReportsRouter(db, authenticate));
+  app.get('/api/categories', authenticate, (_req, res) => {
+    const categories = db.all('SELECT category_id, name, description FROM category ORDER BY category_id ASC');
+    res.json({ categories });
+  });
   app.use('/api/admin', createAdminRouter(db, authenticate, uploadDir, broker, upload));
+  app.use('/api/department-admin', createDepartmentAdminRouter(db, broker, authenticate));
 
   const distDir = path.join(__dirname, 'dist');
   const publicDir = path.join(__dirname, 'public');

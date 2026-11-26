@@ -28,6 +28,8 @@ export const MASTER_DEPARTMENTS = [
   ['PHM', 'Pharmacy', 'support'],
   ['BB', 'Blood Bank', 'support'],
   ['ADM', 'Administration', 'admin'],
+  ['ADMS', 'Admissions', 'support'],
+  ['OPS', 'Operations', 'support'],
   ['HR', 'Human Resources', 'admin'],
   ['FIN', 'Finance', 'admin'],
   ['NUR', 'Nursing', 'clinical'],

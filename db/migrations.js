@@ -266,9 +266,53 @@ export function runMigrations(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_notice_acks_ann ON notice_acknowledgements(announcement_id, user_id);
 
+    CREATE TABLE IF NOT EXISTS admin_verification_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code_label TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      target_role TEXT NOT NULL DEFAULT 'department_admin',
+      department_id INTEGER REFERENCES departments(id),
+      is_demo INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      expires_at TEXT,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_codes_active ON admin_verification_codes(is_active, is_demo);
+
+    CREATE TABLE IF NOT EXISTS category (
+      category_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT
+    );
+
+    INSERT OR IGNORE INTO roles (code, name, description, is_staff)
+    VALUES ('department_admin', 'Department Admin', 'Department-level administration and operations', 1);
+
     UPDATE doctor_profiles SET schedule_configured = 1
     WHERE schedule_configured = 0 AND EXISTS (
       SELECT 1 FROM doctor_schedules ds WHERE ds.doctor_id = doctor_profiles.id AND ds.is_active = 1
     );
   `);
+
+  // Part 2 & Part 3 extensions for Prescriptions PDF + UPI QR Payments
+  ensureCol('prescriptions', 'appointment_id', 'INTEGER REFERENCES appointments(id)');
+  ensureCol('prescriptions', 'diagnosis', 'TEXT');
+  ensureCol('prescriptions', 'symptoms', 'TEXT');
+  ensureCol('prescriptions', 'medicines_json', 'TEXT');
+  ensureCol('prescriptions', 'tests_recommended_json', 'TEXT');
+  ensureCol('prescriptions', 'advice', 'TEXT');
+  ensureCol('prescriptions', 'follow_up_date', 'TEXT');
+
+  ensureCol('payments', 'bill_type', "TEXT NOT NULL DEFAULT 'other'");
+  ensureCol('payments', 'description', 'TEXT');
+  ensureCol('payments', 'transaction_id', 'TEXT');
+  ensureCol('payments', 'payment_method', 'TEXT');
+  ensureCol('payments', 'created_by', 'INTEGER REFERENCES users(id)');
+  ensureCol('payments', 'verification_notes', 'TEXT');
+  ensureCol('payments', 'verified_by', 'INTEGER REFERENCES users(id)');
+  ensureCol('payments', 'verified_at', 'TEXT');
+  ensureCol('payments', 'upi_submitted_at', 'TEXT');
+  ensureCol('payments', 'razorpay_order_id', 'TEXT');
 }

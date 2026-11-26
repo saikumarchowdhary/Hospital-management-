@@ -9,12 +9,14 @@ export function createBedsRouter(db, authenticate) {
   router.get('/', requirePermission('admissions.manage', 'housekeeping.manage', 'patients.read_all'), asyncHandler(async (_req, res) => {
     const beds = db.all(
       `SELECT b.*, r.room_number, r.room_type, r.daily_rate, w.name as ward_name, w.ward_type, w.floor,
-              a.id as active_admission_id, a.admission_ref, pu.full_name as patient_name
+              a.id as active_admission_id, a.admission_ref, a.department_id,
+              d.name as department_name, pu.full_name as patient_name, p.patient_code
        FROM beds b
        JOIN rooms r ON r.id = b.room_id
        JOIN wards w ON w.id = r.ward_id
        LEFT JOIN bed_allocations ba ON ba.bed_id = b.id AND ba.status = 'Active'
        LEFT JOIN admissions a ON a.id = ba.admission_id
+       LEFT JOIN departments d ON d.id = a.department_id
        LEFT JOIN patient_profiles p ON p.id = a.patient_id
        LEFT JOIN users pu ON pu.id = p.user_id
        ORDER BY w.id, r.room_number, b.bed_code`

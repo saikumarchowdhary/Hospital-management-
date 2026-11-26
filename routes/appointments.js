@@ -9,7 +9,8 @@ export function createAppointmentsRouter(db, broker, authenticate) {
   router.use(authenticate);
 
   router.get('/', asyncHandler(async (req, res) => {
-    const { status, date, doctorId, departmentId } = req.query;
+    const { status, date, doctorId, departmentId, department_id } = req.query;
+    const requestedDept = departmentId || department_id;
     const where = ['1=1'];
     const params = [];
 
@@ -19,6 +20,12 @@ export function createAppointmentsRouter(db, broker, authenticate) {
     } else if (req.user.role === 'doctor') {
       where.push('a.doctor_id = ?');
       params.push(req.user.doctor_id);
+    } else if (req.user.role === 'department_admin') {
+      if (requestedDept && Number(requestedDept) !== Number(req.user.department_id)) {
+        throw new AppError(403, 'Access denied to other departments.');
+      }
+      where.push('a.department_id = ?');
+      params.push(req.user.department_id);
     } else if (!['admin', 'receptionist', 'nurse', 'case_manager'].includes(req.user.role)) {
       throw new AppError(403, 'Access denied to appointment schedule.');
     }
@@ -26,7 +33,7 @@ export function createAppointmentsRouter(db, broker, authenticate) {
     if (status) { where.push('a.status = ?'); params.push(status); }
     if (date) { where.push('a.appointment_date = ?'); params.push(date); }
     if (doctorId && req.user.role !== 'doctor') { where.push('a.doctor_id = ?'); params.push(Number(doctorId)); }
-    if (departmentId) { where.push('a.department_id = ?'); params.push(Number(departmentId)); }
+    if (requestedDept && req.user.role !== 'department_admin') { where.push('a.department_id = ?'); params.push(Number(requestedDept)); }
 
     const appointments = db.all(
       `SELECT a.*, pu.full_name as patient_name, p.patient_code,

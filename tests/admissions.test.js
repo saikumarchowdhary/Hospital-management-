@@ -33,6 +33,12 @@ test('Admissions & Housekeeping: bed allocation, duplicate bed conflict, dischar
     assert.equal(alloc1.status, 200);
     assert.equal(alloc1.data.admission.bed_id, availBed.id);
 
+    const occupiedCheck = (await cm.get('/api/beds')).data.beds.find((b) => b.id === availBed.id);
+    assert.equal(occupiedCheck.status, 'Occupied');
+    assert.equal(occupiedCheck.patient_code, 'MRN-1001');
+    assert.ok(occupiedCheck.admission_ref);
+    assert.ok(occupiedCheck.department_name);
+
     // Duplicate bed allocation for pat2's existing open admission blocked (409)
     const adms = (await cm.get('/api/admissions')).data.admissions;
     const adm2 = adms.find((a) => a.patient_id === pat2.id && a.status !== 'Discharged');

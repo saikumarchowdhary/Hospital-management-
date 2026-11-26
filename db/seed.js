@@ -8,6 +8,7 @@ import { MASTER_DEPARTMENTS, MASTER_SPECIALTIES, syncMasterSeedData } from './sy
 export const ROLES = [
   ['patient', 'Patient', 'Appointments, records, bills, reports', 0],
   ['admin', 'Administrator', 'Complete hospital administration', 1],
+  ['department_admin', 'Department Admin', 'Department-level administration and operations', 1],
   ['doctor', 'Doctor', 'Consultations, diagnosis, prescriptions', 1],
   ['nurse', 'Nurse', 'Patient care and vital monitoring', 1],
   ['receptionist', 'Receptionist', 'Registration and appointments', 1],
@@ -59,6 +60,7 @@ export const PERMISSIONS = [
 export const ROLE_PERM_MAP = {
   patient: ['patients.read_own'],
   admin: PERMISSIONS.map((p) => p[0]),
+  department_admin: ['patients.read_all', 'appointments.manage', 'admissions.manage', 'departments.manage', 'reports.view'],
   doctor: ['patients.read_all', 'clinical.read', 'clinical.write', 'appointments.manage', 'admissions.manage', 'lab.process', 'radiology.process', 'reports.view'],
   nurse: ['patients.read_all', 'clinical.read', 'nursing.write', 'admissions.manage'],
   receptionist: ['patients.read_all', 'patients.write', 'appointments.manage', 'admissions.manage', 'finance.manage'],
@@ -80,6 +82,7 @@ export const ROLE_PERM_MAP = {
 export const DEMO_USERS = [
   { code: 'PAT-1001', email: 'patient@demo.com', pass: 'Patient@123', name: 'Sarah Jenkins', phone: '+1-555-0101', role: 'patient', dept: null },
   { code: 'ADM-0001', email: 'admin@demo.com', pass: 'Admin@123', name: 'Dr. Arthur Vance', phone: '+1-555-0100', role: 'admin', dept: 'Administration' },
+  { code: 'DADM-0101', email: 'deptadmin@demo.com', pass: 'DeptAdmin@123', name: 'Dr. Maya Sterling', phone: '+1-555-0117', role: 'department_admin', dept: 'Cardiology' },
   { code: 'DOC-2001', email: 'doctor@demo.com', pass: 'Doctor@123', name: 'Dr. Elena Rostova', phone: '+1-555-0102', role: 'doctor', dept: 'Cardiology' },
   { code: 'NUR-3001', email: 'nurse@demo.com', pass: 'Nurse@123', name: 'Clara Bennett', phone: '+1-555-0103', role: 'nurse', dept: 'Nursing' },
   { code: 'REC-4001', email: 'reception@demo.com', pass: 'Reception@123', name: 'Marcus Reed', phone: '+1-555-0104', role: 'receptionist', dept: 'Administration' },
@@ -192,6 +195,17 @@ export function seedReferenceData(db) {
     }
     for (const c of ['Hematology', 'Biochemistry', 'Cardiac Markers']) {
       db.run('INSERT OR IGNORE INTO lab_categories (name) VALUES (?)', [c]);
+    }
+    const baseCategories = [
+      ['Billing & Insurance', 'Invoice queries, insurance pre-authorization, and payment settlements'],
+      ['Clinical Care', 'Doctor consultations, nursing assistance, and inpatient care quality'],
+      ['Appointments & Scheduling', 'OPD bookings, rescheduling, and waiting time coordination'],
+      ['Facility & Housekeeping', 'Ward cleanliness, room sanitization, and maintenance requests'],
+      ['Pharmacy & Diagnostics', 'Medicine dispensing, laboratory tests, and radiology imaging'],
+      ['HR & Staff Support', 'Staffing rosters, workplace support, and recruitment coordination']
+    ];
+    for (const [name, description] of baseCategories) {
+      db.run('INSERT OR IGNORE INTO category (name, description) VALUES (?, ?)', [name, description]);
     }
     const lCat = Object.fromEntries(db.all('SELECT id, name FROM lab_categories').map((r) => [r.name, r.id]));
     const labTests = [

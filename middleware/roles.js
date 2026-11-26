@@ -36,7 +36,7 @@ export function canAccessClinicalRecord(db, user, patientId) {
   const pid = Number(patientId);
   if (user.role === 'admin') return true;
   if (user.role === 'patient') return user.patient_id === pid;
-  if (['accountant', 'hr', 'publisher', 'approver', 'housekeeping', 'candidate', 'external_coordinator', 'radiologist', 'bloodbank_staff'].includes(user.role)) {
+  if (['accountant', 'hr', 'publisher', 'approver', 'housekeeping', 'candidate', 'external_coordinator', 'radiologist', 'bloodbank_staff', 'department_admin'].includes(user.role)) {
     return false;
   }
   if (user.role === 'doctor') {

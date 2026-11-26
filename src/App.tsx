@@ -57,7 +57,8 @@ import {
   Area,
   XAxis,
   YAxis,
-  CartesianGrid
+  CartesianGrid,
+  Treemap
 } from 'recharts';
 import { apiRequest, buildWsUrl, setAccessToken } from './lib/api';
 import { PatientsPanel } from './components/PatientsPanel';
@@ -65,16 +66,44 @@ import { DoctorsAppointmentsPanel } from './components/DoctorsAppointmentsPanel'
 import { ClinicalDiagnosticsPanel } from './components/ClinicalDiagnosticsPanel';
 import { BillingInsurancePanel } from './components/BillingInsurancePanel';
 import { OperationsIntegrationsPanel } from './components/OperationsIntegrationsPanel';
-import { AuthModal, LoginPortalType } from './components/AuthModal';
+import { AuthModal, LoginPortalType, AccountTypeOption } from './components/AuthModal';
 import { AdminSignupsPanel } from './components/AdminSignupsPanel';
+import { AddAdminPanel } from './components/AddAdminPanel';
 import { AdminDashboardPanel } from './components/AdminDashboardPanel';
+import { DepartmentAdminDashboardPanel } from './components/DepartmentAdminDashboardPanel';
 import { HrDashboardPanel } from './components/HrDashboardPanel';
 import { PublisherDashboardPanel } from './components/PublisherDashboardPanel';
 import { ApproverDashboardPanel } from './components/ApproverDashboardPanel';
 import { DoctorScheduleWizardModal } from './components/DoctorScheduleWizardModal';
 import { CandidateCareersPanel } from './components/CandidateCareersPanel';
 import { PharmacyInventoryPanel } from './components/PharmacyInventoryPanel';
-import { Megaphone, Building2, ClipboardCheck } from 'lucide-react';
+import { PrescriptionsPanel } from './components/PrescriptionsPanel';
+import { PrescriptionVerifyPage } from './components/PrescriptionVerifyPage';
+import { AdminQrLabelsPanel } from './components/AdminQrLabelsPanel';
+import { Megaphone, Building2, ClipboardCheck, FileText, QrCode } from 'lucide-react';
+
+const ADMIN_TAB_TO_PATH: Record<string, string> = {
+  dashboard: '/admin/dashboard',
+  admin_qr_labels: '/admin/qr-labels',
+  add_admin: '/admin/add-admin',
+  users_signups: '/admin/users',
+  departments: '/admin/departments',
+  finance_payroll: '/admin/finance',
+  admin_prescriptions: '/admin/prescriptions',
+  admin_payments: '/admin/payments',
+  hr_workspace: '/admin/hr',
+  admin_notices_docs: '/admin/notices',
+  admin_settings: '/admin/settings',
+  settings: '/admin/rbac',
+};
+
+const ADMIN_PATH_TO_TAB: Record<string, string> = Object.entries(ADMIN_TAB_TO_PATH).reduce(
+  (acc, [tabId, path]) => {
+    acc[path] = tabId;
+    return acc;
+  },
+  {} as Record<string, string>
+);
 
 interface AuthUser {
   id: number;
@@ -226,6 +255,10 @@ function AuditDiffViewer({ before, after }: { before: any; after: any }) {
 }
 
 export default function App() {
+  const [verifyPrescriptionRef, setVerifyPrescriptionRef] = useState<string | null>(() => {
+    const m = /^\/verify\/prescription\/([^/]+)\/?$/i.exec(window.location.pathname);
+    return m ? decodeURIComponent(m[1]) : null;
+  });
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -236,6 +269,8 @@ export default function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authPortal, setAuthPortal] = useState<LoginPortalType>('patient');
+  const [authInitialTab, setAuthInitialTab] = useState<'login' | 'register'>('login');
+  const [authInitialAccountType, setAuthInitialAccountType] = useState<AccountTypeOption | undefined>(undefined);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [demoAccounts, setDemoAccounts] = useState<any[]>([]);
   const [pendingSignupsCount, setPendingSignupsCount] = useState(0);
@@ -246,6 +281,7 @@ export default function App() {
   const [liveNotices, setLiveNotices] = useState<any[]>([]);
   const [newRoleOpen, setNewRoleOpen] = useState(false);
   const [newRoleForm, setNewRoleForm] = useState({ code: '', name: '', description: '', is_staff: true });
+  const [deptAdminSubTab, setDeptAdminSubTab] = useState<'overview' | 'employees' | 'patients_ops' | 'leaves' | 'activity'>('overview');
   const [hrSubTab, setHrSubTab] = useState<'overview' | 'employees' | 'vacancies' | 'candidates' | 'interviews' | 'offers' | 'reports'>('overview');
   const [pubSubTab, setPubSubTab] = useState<'overview' | 'notices' | 'campaigns' | 'acknowledgements'>('overview');
   const [appSubTab, setAppSubTab] = useState<'pending_notices' | 'urgent' | 'pending_campaigns' | 'history'>('pending_notices');
@@ -289,6 +325,8 @@ export default function App() {
 
   // Backend-synced Dashboard, Beds, Admin RBAC & Audit state
   const [dashboardStats, setDashboardStats] = useState<any>(null);
+  const [deptPatientFilter, setDeptPatientFilter] = useState<'all' | 'active_patients' | 'clinical'>('all');
+  const [deptChartMode, setDeptChartMode] = useState<'treemap' | 'bar'>('treemap');
   const [searchAnalyticsData, setSearchAnalyticsData] = useState<{ topTerms: any[]; dailyTrend: any[] }>({
     topTerms: [],
     dailyTrend: [],
@@ -337,6 +375,9 @@ export default function App() {
           type: b.bed_type || b.room_type,
           status: b.status,
           patient: b.patient_name || null,
+          patient_code: b.patient_code || null,
+          admission_ref: b.admission_ref || null,
+          department_name: b.department_name || null,
           active_admission_id: b.active_admission_id || null,
         }));
         setBeds(mappedBeds);
@@ -388,6 +429,7 @@ export default function App() {
 
   const getHomeTabForRole = useCallback((role: string) => {
     if (role === 'candidate') return 'careers';
+    if (role === 'department_admin') return 'dept_admin_workspace';
     if (role === 'hr') return 'hr_workspace';
     if (role === 'publisher') return 'publisher_workspace';
     if (role === 'approver') return 'approver_workspace';
@@ -413,15 +455,37 @@ export default function App() {
       .then((res) => {
         if (res.user) {
           setAuthUser(res.user);
-          setActiveTab(getHomeTabForRole(res.user.role));
+          const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+          if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+            if (res.user.role === 'admin') {
+              const targetTab = ADMIN_PATH_TO_TAB[pathname] || 'dashboard';
+              setActiveTab(targetTab);
+              window.history.replaceState(null, '', ADMIN_TAB_TO_PATH[targetTab] || '/admin/dashboard');
+            } else {
+              const homeTab = getHomeTabForRole(res.user.role);
+              setActiveTab(homeTab);
+              window.history.replaceState(null, '', `/#/${homeTab}`);
+              notify('You do not have admin access.', 'error');
+            }
+          } else {
+            setActiveTab(getHomeTabForRole(res.user.role));
+          }
           if (res.user.role === 'doctor' && !res.user.schedule_configured) setDoctorWizardOpen(true);
           loadAuthenticatedWorkspace(res.user);
         }
       })
       .catch(() => {
+        const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+        if (/^\/verify\/prescription\/[^/]+$/i.test(pathname)) {
+          return;
+        }
+        if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+          window.history.replaceState(null, '', '/');
+          setAuthPortal('admin');
+        }
         setAuthModalOpen(true);
       });
-  }, [loadAuthenticatedWorkspace, getHomeTabForRole]);
+  }, [loadAuthenticatedWorkspace, getHomeTabForRole, notify]);
 
   // Real multi-user WebSocket client connection
   useEffect(() => {
@@ -498,7 +562,13 @@ export default function App() {
       setAccessToken(res.token);
       setAuthUser(res.user);
       setAuthModalOpen(false);
-      setActiveTab(getHomeTabForRole(res.user.role));
+      const nextTab = getHomeTabForRole(res.user.role);
+      setActiveTab(nextTab);
+      if (res.user.role === 'admin') {
+        window.history.replaceState(null, '', '/admin/dashboard');
+      } else {
+        window.history.replaceState(null, '', `/#/${nextTab}`);
+      }
       setDoctorWizardOpen(Boolean(res.user.role === 'doctor' && !res.user.schedule_configured));
       notify(`Signed in as ${res.user.full_name} (${res.user.role_name}).`, 'success');
       loadAuthenticatedWorkspace(res.user);
@@ -514,6 +584,8 @@ export default function App() {
     setBeds([]);
     setActivityLogs([]);
     setDashboardStats(null);
+    setActiveTab('dashboard');
+    window.history.replaceState(null, '', '/');
     setAuthModalOpen(true);
     notify('Signed out securely.', 'success');
   };
@@ -681,6 +753,28 @@ export default function App() {
     ];
   }, [dashboardStats, beds]);
 
+  const patientsByAgeGroupData = useMemo(() => {
+    const raw =
+      dashboardStats?.patientsByAgeGroup ||
+      dashboardStats?.charts?.patientsByAgeGroup ||
+      rbacOverview?.stats?.patientsByAgeGroup ||
+      rbacOverview?.stats?.charts?.patientsByAgeGroup;
+    const palette = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
+    if (Array.isArray(raw) && raw.length) {
+      return raw.map((item: any, idx: number) => ({
+        name: item.name || item.label || 'Unknown',
+        value: Number(item.value || 0),
+        color: palette[idx % palette.length],
+      }));
+    }
+    return [
+      { name: '0-18', value: 8, color: '#3B82F6' },
+      { name: '19-35', value: 24, color: '#10B981' },
+      { name: '36-60', value: 42, color: '#F59E0B' },
+      { name: '60+', value: 18, color: '#8B5CF6' },
+    ];
+  }, [dashboardStats, rbacOverview]);
+
   const bedOccupancyTrendData = useMemo(() => {
     const rev = dashboardStats?.charts?.registrationsTrend;
     const totalBeds = Math.max(1, (dashboardStats?.kpis?.occupiedBeds || 0) + (dashboardStats?.kpis?.availableBeds || 0));
@@ -695,6 +789,41 @@ export default function App() {
     }
     return [];
   }, [dashboardStats]);
+
+  const patientDeptDistributionData = useMemo(() => {
+    const raw =
+      dashboardStats?.charts?.patientDistributionByDepartment ||
+      rbacOverview?.stats?.charts?.patientDistributionByDepartment ||
+      [];
+    if (!Array.isArray(raw)) return [];
+    if (deptPatientFilter === 'active_patients') {
+      return raw.filter((d: any) => Number(d.patients || 0) > 0);
+    }
+    if (deptPatientFilter === 'clinical') {
+      return raw.filter((d: any) => d.category === 'clinical');
+    }
+    return raw;
+  }, [dashboardStats, rbacOverview, deptPatientFilter]);
+
+  const prescriptionsSummary30Days = useMemo(() => {
+    const summary =
+      dashboardStats?.prescriptionsSummary30Days ||
+      rbacOverview?.stats?.prescriptionsSummary30Days;
+    const totalCount = Number(
+      summary?.totalCount ??
+        dashboardStats?.kpis?.prescriptionsLast30DaysTotal ??
+        rbacOverview?.stats?.kpis?.prescriptionsLast30DaysTotal ??
+        0
+    );
+    const topDoctors = Array.isArray(summary?.topDoctors)
+      ? summary.topDoctors
+      : Array.isArray(dashboardStats?.charts?.topPrescribingDoctors30Days)
+        ? dashboardStats.charts.topPrescribingDoctors30Days
+        : Array.isArray(rbacOverview?.stats?.charts?.topPrescribingDoctors30Days)
+          ? rbacOverview.stats.charts.topPrescribingDoctors30Days
+          : [];
+    return { totalCount, topDoctors };
+  }, [dashboardStats, rbacOverview]);
 
   const handleCreateRole = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -781,6 +910,16 @@ export default function App() {
         { id: 'profile', label: 'My Profile', icon: User },
       ];
     }
+    if (userRoleCode === 'department_admin') {
+      return [
+        { id: 'dept_admin_workspace', subTab: 'overview', label: 'Dept Overview', icon: LayoutDashboard },
+        { id: 'dept_admin_workspace', subTab: 'employees', label: 'Dept Employees', icon: Users },
+        { id: 'dept_admin_workspace', subTab: 'patients_ops', label: 'Patients & Ops', icon: CalendarIcon },
+        { id: 'dept_admin_workspace', subTab: 'leaves', label: 'Leave Requests', icon: Clock },
+        { id: 'dept_admin_workspace', subTab: 'activity', label: 'Dept Activity', icon: Shield },
+        { id: 'profile', label: 'My Profile', icon: User },
+      ];
+    }
     if (userRoleCode === 'approver') {
       return [
         { id: 'approver_workspace', subTab: 'pending_notices', label: 'Pending Notices', icon: ClipboardCheck },
@@ -810,6 +949,13 @@ export default function App() {
         badge: beds.filter((b) => b.status === 'Occupied').length,
       });
     }
+    if (['doctor', 'patient', 'pharmacist', 'nurse'].includes(userRoleCode)) {
+      items.push({
+        id: 'prescriptions',
+        label: userRoleCode === 'patient' ? 'My Prescriptions' : 'Prescriptions',
+        icon: FileText,
+      });
+    }
     if (
       perms.has('pharmacy.dispense') ||
       perms.has('lab.process') ||
@@ -820,14 +966,22 @@ export default function App() {
       items.push({ id: 'pharmacy', label: 'Pharmacy & Inventory', icon: Pill });
     }
     if (perms.has('finance.manage') || perms.has('insurance.manage') || userRoleCode === 'patient') {
-      items.push({ id: 'billing', label: 'Billing & Insurance', icon: CreditCard });
+      items.push({
+        id: 'billing',
+        label: userRoleCode === 'patient' ? 'My Bills' : 'Billing & Insurance',
+        icon: CreditCard,
+      });
     }
     if (['accountant', 'receptionist', 'external_coordinator'].includes(userRoleCode)) {
       items.push({ id: 'operations', label: 'Integrations & Notices', icon: Briefcase });
     }
     if (userRoleCode === 'admin') {
       items.push({ id: 'users_signups', label: 'Users & Staff', icon: UserCheck, badge: pendingSignupsCount });
+      items.push({ id: 'add_admin', label: 'Add Admin', icon: Shield });
       items.push({ id: 'departments', label: 'Departments', icon: Building2 });
+      items.push({ id: 'admin_prescriptions', label: 'All Prescriptions', icon: FileText });
+      items.push({ id: 'admin_payments', label: 'All Payments', icon: CreditCard });
+      items.push({ id: 'admin_qr_labels', label: 'QR Labels', icon: QrCode });
       items.push({ id: 'finance_payroll', label: 'Finance & Payroll', icon: CreditCard });
       items.push({ id: 'hr_workspace', label: 'HR Oversight', icon: Briefcase });
       items.push({ id: 'admin_notices_docs', label: 'Notices & Docs', icon: Megaphone });
@@ -841,26 +995,70 @@ export default function App() {
   const allowedTabIds = useMemo(() => new Set(navigationItems.map((i) => i.id)), [navigationItems]);
   const isRouteAuthorized = !authUser || allowedTabIds.has(activeTab);
 
-  // Sync URL hash to activeTab & listen to hash navigation with route protection
+  // Sync URL hash & /admin/* routes to activeTab with strict route protection
   useEffect(() => {
     const syncFromHash = () => {
       const h = window.location.hash.replace(/^#\/?/, '').trim();
-      if (h && ['dashboard', 'careers', 'hr_workspace', 'publisher_workspace', 'approver_workspace', 'patients', 'doctors', 'appointments', 'beds', 'pharmacy', 'billing', 'operations', 'users_signups', 'departments', 'finance_payroll', 'admin_notices_docs', 'admin_settings', 'settings', 'profile'].includes(h)) {
+      if (h && ['dashboard', 'careers', 'dept_admin_workspace', 'hr_workspace', 'publisher_workspace', 'approver_workspace', 'patients', 'doctors', 'appointments', 'beds', 'prescriptions', 'pharmacy', 'billing', 'operations', 'users_signups', 'add_admin', 'departments', 'admin_prescriptions', 'admin_payments', 'admin_qr_labels', 'finance_payroll', 'admin_notices_docs', 'admin_settings', 'settings', 'profile'].includes(h)) {
         setActiveTab(h);
       }
     };
+    const syncFromPath = () => {
+      const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+      if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+        if (!authUser) {
+          window.history.replaceState(null, '', '/');
+          setAuthPortal('admin');
+          setAuthInitialTab('login');
+          setAuthModalOpen(true);
+          return;
+        }
+        if (authUser.role !== 'admin') {
+          const homeTab = getHomeTabForRole(authUser.role);
+          window.history.replaceState(null, '', `/#/${homeTab}`);
+          setActiveTab(homeTab);
+          notify('You do not have admin access.', 'error');
+          return;
+        }
+        setActiveTab(ADMIN_PATH_TO_TAB[pathname] || 'dashboard');
+      }
+    };
     window.addEventListener('hashchange', syncFromHash);
-    return () => window.removeEventListener('hashchange', syncFromHash);
-  }, []);
+    window.addEventListener('popstate', syncFromPath);
+    return () => {
+      window.removeEventListener('hashchange', syncFromHash);
+      window.removeEventListener('popstate', syncFromPath);
+    };
+  }, [authUser, getHomeTabForRole, notify]);
 
   useEffect(() => {
+    if (verifyPrescriptionRef) return;
     if (authUser && activeTab) {
+      if (authUser.role === 'admin' && ADMIN_TAB_TO_PATH[activeTab]) {
+        const expectedPath = ADMIN_TAB_TO_PATH[activeTab];
+        if (window.location.pathname !== expectedPath || window.location.hash) {
+          window.history.replaceState(null, '', expectedPath);
+        }
+        return;
+      }
       const expectedHash = `#/${activeTab}`;
-      if (window.location.hash !== expectedHash) {
-        window.history.replaceState(null, '', expectedHash);
+      if (window.location.pathname.startsWith('/admin') || window.location.hash !== expectedHash) {
+        window.history.replaceState(null, '', `/${expectedHash}`);
       }
     }
-  }, [authUser, activeTab]);
+  }, [authUser, activeTab, verifyPrescriptionRef]);
+
+  if (verifyPrescriptionRef) {
+    return (
+      <PrescriptionVerifyPage
+        prescriptionRef={verifyPrescriptionRef}
+        onBackHome={() => {
+          setVerifyPrescriptionRef(null);
+          window.history.replaceState(null, '', '/');
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
@@ -961,6 +1159,7 @@ export default function App() {
             const isActive =
               activeTab === item.id &&
               (!item.subTab ||
+                (item.id === 'dept_admin_workspace' && deptAdminSubTab === item.subTab) ||
                 (item.id === 'hr_workspace' && hrSubTab === item.subTab) ||
                 (item.id === 'publisher_workspace' && pubSubTab === item.subTab) ||
                 (item.id === 'approver_workspace' && appSubTab === item.subTab));
@@ -969,6 +1168,7 @@ export default function App() {
                 key={`${item.id}-${item.subTab || 'main'}`}
                 onClick={() => {
                   setActiveTab(item.id);
+                  if (item.id === 'dept_admin_workspace' && item.subTab) setDeptAdminSubTab(item.subTab as any);
                   if (item.id === 'hr_workspace' && item.subTab) setHrSubTab(item.subTab as any);
                   if (item.id === 'publisher_workspace' && item.subTab) setPubSubTab(item.subTab as any);
                   if (item.id === 'approver_workspace' && item.subTab) setAppSubTab(item.subTab as any);
@@ -1101,21 +1301,38 @@ export default function App() {
         <div className="p-4 md:p-8 flex-1 max-w-7xl w-full mx-auto">
           {!authUser && (
             <div className="mb-6 bg-white border border-slate-200 rounded-2xl p-6 shadow-xs space-y-4">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">CareLine HMS — Four Role-Protected Login Portals</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Select your designated hospital portal to authenticate with role-based access control.</p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">CareLine HMS — Role-Based Portals & Department Access</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">Select your designated hospital portal to sign in, or create a verified Patient, Doctor, Candidate, or Staff account.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setAuthPortal('patient');
+                    setAuthInitialTab('register');
+                    setAuthInitialAccountType('patient');
+                    setAuthModalOpen(true);
+                  }}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shrink-0"
+                >
+                  Create Account
+                </button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {[
-                  { portal: 'patient' as LoginPortalType, title: '1. Patient Login', desc: 'Appointments, EHR, Reports & Careers' },
-                  { portal: 'staff' as LoginPortalType, title: '2. Hospital Staff Login', desc: 'Doctors, Nurses, Reception, Lab & Pharmacy' },
-                  { portal: 'admin' as LoginPortalType, title: '3. Administrator Login', desc: 'Governance, Users, RBAC & Audit Logs' },
-                  { portal: 'hr_publisher' as LoginPortalType, title: '4. HR / Publisher Login', desc: 'HR Hiring Team, Publisher & Approver' },
+                  { portal: 'admin' as LoginPortalType, title: 'Admin Login', desc: 'All Departments, Users, RBAC & Audit Governance' },
+                  { portal: 'department_admin' as LoginPortalType, title: 'Department Admin Login', desc: 'Department-Scoped Staff, Patients & Operations' },
+                  { portal: 'hr' as LoginPortalType, title: 'HR Login', desc: 'Workforce Management, Recruitment & Payroll' },
+                  { portal: 'publisher' as LoginPortalType, title: 'Publisher Login', desc: 'Hospital Notices, Campaigns & Approvals' },
+                  { portal: 'staff' as LoginPortalType, title: 'Hospital Staff Login', desc: 'Doctors, Nurses, Reception, Lab & Pharmacy' },
+                  { portal: 'patient' as LoginPortalType, title: 'Patient & Candidate Login', desc: 'Appointments, EHR, Reports & Careers' },
                 ].map((entry) => (
                   <button
                     key={entry.portal}
                     onClick={() => {
                       setAuthPortal(entry.portal);
+                      setAuthInitialTab('login');
+                      setAuthInitialAccountType(undefined);
                       setAuthModalOpen(true);
                     }}
                     className="p-4 text-left bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl transition-all"
@@ -1161,6 +1378,10 @@ export default function App() {
           {/* DEDICATED ROLE WORKSPACES */}
           {isRouteAuthorized && activeTab === 'careers' && userRoleCode === 'candidate' && (
             <CandidateCareersPanel onNotify={notify} refreshSignal={refreshSignal} />
+          )}
+
+          {isRouteAuthorized && activeTab === 'dept_admin_workspace' && userRoleCode === 'department_admin' && (
+            <DepartmentAdminDashboardPanel onNotify={notify} refreshSignal={refreshSignal} initialSubTab={deptAdminSubTab} />
           )}
 
           {isRouteAuthorized && activeTab === 'hr_workspace' && ['hr', 'admin'].includes(userRoleCode) && (
@@ -1246,11 +1467,11 @@ export default function App() {
           )}
 
           {/* DASHBOARD */}
-          {isRouteAuthorized && activeTab === 'dashboard' && !['candidate', 'hr', 'publisher', 'approver'].includes(userRoleCode) && (
+          {isRouteAuthorized && activeTab === 'dashboard' && !['candidate', 'department_admin', 'hr', 'publisher', 'approver'].includes(userRoleCode) && (
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-2xl font-bold text-slate-900">{userRoleLabel} Dashboard</h2>
+                  <h2 className="text-2xl font-bold text-slate-900">{userRoleCode === 'admin' ? 'Super Admin Dashboard' : `${userRoleLabel} Dashboard`}</h2>
                   <p className="text-sm text-slate-500 mt-1">Real-time hospital telemetry, capacity overview, and search query insights.</p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1397,6 +1618,31 @@ export default function App() {
                   </div>
                 </div>
 
+                {userRoleCode === 'admin' && (
+                  <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
+                    <div className="flex items-center space-x-3 mb-4">
+                      <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><PieChartIcon className="w-5 h-5" /></div>
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-lg">Patient Distribution by Age Groups</h3>
+                        <p className="text-xs text-slate-500">Demographic breakdown (0-18, 19-35, 36-60, 60+)</p>
+                      </div>
+                    </div>
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={patientsByAgeGroupData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={4} dataKey="value">
+                            {patientsByAgeGroupData.map((entry, idx) => (
+                              <Cell key={`cell-age-${idx}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#fff', border: 'none' }} />
+                          <Legend verticalAlign="bottom" align="center" iconType="circle" />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
                 <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
                   <div className="flex items-center space-x-3 mb-4">
                     <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><TrendingUp className="w-5 h-5" /></div>
@@ -1453,6 +1699,282 @@ export default function App() {
                     )}
                   </div>
                 </div>
+
+                {userRoleCode === 'admin' && (
+                  <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs lg:col-span-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                      <div className="flex items-center space-x-3">
+                        <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Building2 className="w-5 h-5" /></div>
+                        <div>
+                          <h3 className="font-bold text-slate-900 text-lg">Patient Distribution Across All Hospital Departments</h3>
+                          <p className="text-xs text-slate-500">
+                            Unique patients (OPD appointments, inpatient admissions &amp; consultations) across {patientDeptDistributionData.length} hospital departments
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setDeptChartMode('treemap')}
+                            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors ${
+                              deptChartMode === 'treemap' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            Treemap Heatmap
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeptChartMode('bar')}
+                            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors ${
+                              deptChartMode === 'bar' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            Bar Chart
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs">
+                          {[
+                            { id: 'all', label: 'All Departments' },
+                            { id: 'clinical', label: 'Clinical' },
+                            { id: 'active_patients', label: 'With Patients' },
+                          ].map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setDeptPatientFilter(opt.id as 'all' | 'active_patients' | 'clinical')}
+                              className={`px-3 py-1.5 rounded-xl font-semibold transition-colors ${
+                                deptPatientFilter === opt.id
+                                  ? 'bg-slate-900 text-white'
+                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {patientDeptDistributionData.length > 0 ? (
+                      deptChartMode === 'treemap' ? (
+                        <div className="h-[420px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <Treemap
+                              data={patientDeptDistributionData.map((d: any, i: number) => ({
+                                name: d.department_name,
+                                size: Number(d.patients || 0),
+                                inpatient: Number(d.inpatient_count || 0),
+                                category: d.category || 'clinical',
+                                fill: ['#1E5EFF', '#10B981', '#6366F1', '#F59E0B', '#8B5CF6', '#EC4899', '#14B8A6', '#0284C7', '#4F46E5', '#0D9488'][i % 10]
+                              }))}
+                              dataKey="size"
+                              stroke="#fff"
+                              content={({ x, y, width, height, name, size, fill }: any) => {
+                                if (width < 35 || height < 35) return <g />;
+                                return (
+                                  <g>
+                                    <rect
+                                      x={x}
+                                      y={y}
+                                      width={width}
+                                      height={height}
+                                      style={{
+                                        fill: fill,
+                                        stroke: '#fff',
+                                        strokeWidth: 2,
+                                        strokeOpacity: 1,
+                                        rx: 6,
+                                        ry: 6
+                                      }}
+                                    />
+                                    {width > 60 && height > 40 && (
+                                      <>
+                                        <text x={x + 10} y={y + 22} fill="#fff" fontSize={12} fontWeight={700} textAnchor="start">
+                                          {name.length > Math.floor(width / 7) ? name.slice(0, Math.max(3, Math.floor(width / 7) - 2)) + '..' : name}
+                                        </text>
+                                        <text x={x + 10} y={y + 38} fill="#F8FAFC" fontSize={11} fontWeight={600} textAnchor="start">
+                                          {size} Patients
+                                        </text>
+                                      </>
+                                    )}
+                                  </g>
+                                );
+                              }}
+                            >
+                              <Tooltip
+                                content={({ active, payload }: any) => {
+                                  if (active && payload && payload.length) {
+                                    const data = payload[0].payload;
+                                    return (
+                                      <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1">
+                                        <p className="font-bold text-sm">{data.name}</p>
+                                        <p className="text-blue-400 font-semibold">Total Unique Patients: {data.size}</p>
+                                        <p className="text-emerald-400 font-semibold">Inpatient Admissions: {data.inpatient}</p>
+                                        <p className="text-slate-400 capitalize">Category: {data.category}</p>
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                }}
+                              />
+                            </Treemap>
+                          </ResponsiveContainer>
+                        </div>
+                      ) : (
+                        <div className="max-h-[460px] overflow-y-auto pr-2">
+                          <div style={{ height: Math.max(320, patientDeptDistributionData.length * 32) }}>
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={patientDeptDistributionData}
+                                layout="vertical"
+                                margin={{ top: 8, right: 24, left: 10, bottom: 8 }}
+                              >
+                                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E2E8F0" />
+                                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} stroke="#64748B" />
+                                <YAxis
+                                  type="category"
+                                  dataKey="department_name"
+                                  width={170}
+                                  tick={{ fontSize: 11, fill: '#334155' }}
+                                  stroke="#64748B"
+                                  interval={0}
+                                />
+                                <Tooltip
+                                  contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#fff', border: 'none' }}
+                                  labelStyle={{ color: '#F8FAFC', fontWeight: 700, marginBottom: 4 }}
+                                />
+                                <Legend verticalAlign="top" align="right" iconType="circle" />
+                                <Bar dataKey="patients" name="Total Unique Patients" fill="#1E5EFF" radius={[0, 6, 6, 0]} barSize={14} />
+                                <Bar dataKey="inpatient_count" name="Inpatient Admissions" fill="#10B981" radius={[0, 6, 6, 0]} barSize={10} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      )
+                    ) : (
+                      <div className="h-64 flex items-center justify-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                        No department patient distribution data available for the selected filter.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {userRoleCode === 'admin' && (
+                  <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs lg:col-span-2 space-y-5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center space-x-3">
+                        <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><FileText className="w-5 h-5" /></div>
+                        <div>
+                          <h3 className="font-bold text-slate-900 text-lg">30-Day Prescription Summary — Top 5 Prescribing Doctors</h3>
+                          <p className="text-xs text-slate-500">
+                            Generated prescriptions over the past 30 days, segmented by top prescribing physicians
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="px-4 py-2 bg-indigo-50 border border-indigo-100 rounded-xl text-right">
+                          <span className="block text-[10px] font-bold uppercase tracking-wider text-indigo-600">30-Day Total</span>
+                          <span className="text-xl font-bold font-mono text-slate-900">{prescriptionsSummary30Days.totalCount}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('admin_prescriptions')}
+                          className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold whitespace-nowrap"
+                        >
+                          View All Prescriptions
+                        </button>
+                      </div>
+                    </div>
+
+                    {prescriptionsSummary30Days.topDoctors.length > 0 ? (
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-center">
+                        <div className="h-64">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={prescriptionsSummary30Days.topDoctors}
+                              layout="vertical"
+                              margin={{ top: 6, right: 20, left: 10, bottom: 6 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E2E8F0" />
+                              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} stroke="#64748B" />
+                              <YAxis
+                                type="category"
+                                dataKey="doctor_name"
+                                width={150}
+                                tick={{ fontSize: 11, fill: '#334155' }}
+                                stroke="#64748B"
+                                interval={0}
+                              />
+                              <Tooltip
+                                contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#fff', border: 'none' }}
+                                labelStyle={{ color: '#F8FAFC', fontWeight: 700, marginBottom: 4 }}
+                              />
+                              <Legend verticalAlign="top" align="right" iconType="circle" />
+                              <Bar dataKey="dispensed_count" stackId="rx" name="Dispensed" fill="#10B981" barSize={16} />
+                              <Bar dataKey="pending_count" stackId="rx" name="Requested / Active" fill="#4F46E5" radius={[0, 6, 6, 0]} barSize={16} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          {prescriptionsSummary30Days.topDoctors.map((doc: any, idx: number) => {
+                            const sharePct = prescriptionsSummary30Days.totalCount > 0
+                              ? Math.round((Number(doc.prescription_count || 0) / prescriptionsSummary30Days.totalCount) * 100)
+                              : 0;
+                            return (
+                              <div key={doc.doctor_id} className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <span className="w-6 h-6 rounded-lg bg-indigo-600 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                                      #{idx + 1}
+                                    </span>
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-bold text-slate-900 truncate">{doc.doctor_name}</div>
+                                      <div className="text-[11px] text-slate-500 truncate">
+                                        {doc.specialization} · {doc.department_name}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <div className="text-sm font-bold font-mono text-slate-900">
+                                      {doc.prescription_count} <span className="text-[11px] font-sans font-medium text-slate-500">Rx ({sharePct}%)</span>
+                                    </div>
+                                    <div className="text-[11px] text-slate-500">
+                                      {doc.dispensed_count} dispensed · {doc.pending_count} active
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-indigo-600 rounded-full transition-all"
+                                    style={{ width: `${Math.max(4, sharePct)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-44 flex items-center justify-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                        No prescriptions have been generated in the last 30 days.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {userRoleCode === 'admin' && (
+                  <div className="lg:col-span-2">
+                    <AdminQrLabelsPanel
+                      beds={beds}
+                      departments={rbacOverview?.departments || []}
+                      compact={true}
+                      onOpenFullPage={() => setActiveTab('admin_qr_labels')}
+                      onNotify={notify}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1465,6 +1987,14 @@ export default function App() {
             <DoctorsAppointmentsPanel mode={activeTab as 'doctors' | 'appointments'} searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
+          {isRouteAuthorized && activeTab === 'prescriptions' && (
+            <PrescriptionsPanel userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
+          )}
+
+          {isRouteAuthorized && activeTab === 'admin_prescriptions' && userRoleCode === 'admin' && (
+            <PrescriptionsPanel userRole="admin" onNotify={notify} refreshSignal={refreshSignal} />
+          )}
+
           {isRouteAuthorized && activeTab === 'pharmacy' && (
             <PharmacyInventoryPanel searchQuery={searchQuery} userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
@@ -1473,12 +2003,35 @@ export default function App() {
             <BillingInsurancePanel userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
+          {isRouteAuthorized && activeTab === 'admin_payments' && userRoleCode === 'admin' && (
+            <BillingInsurancePanel userRole="admin" onNotify={notify} refreshSignal={refreshSignal} adminPaymentsOnly={true} />
+          )}
+
+          {isRouteAuthorized && activeTab === 'admin_qr_labels' && userRoleCode === 'admin' && (
+            <AdminQrLabelsPanel
+              beds={beds}
+              departments={rbacOverview?.departments || []}
+              compact={false}
+              onNotify={notify}
+            />
+          )}
+
           {isRouteAuthorized && activeTab === 'operations' && (
             <OperationsIntegrationsPanel userRole={userRoleCode} onNotify={notify} refreshSignal={refreshSignal} />
           )}
 
           {isRouteAuthorized && activeTab === 'users_signups' && userRoleCode === 'admin' && (
             <AdminSignupsPanel
+              onNotify={notify}
+              refreshSignal={refreshSignal}
+              onDataChanged={() => {
+                if (authUser) loadAuthenticatedWorkspace(authUser);
+              }}
+            />
+          )}
+
+          {isRouteAuthorized && activeTab === 'add_admin' && userRoleCode === 'admin' && (
+            <AddAdminPanel
               onNotify={notify}
               refreshSignal={refreshSignal}
               onDataChanged={() => {
@@ -1848,12 +2401,20 @@ export default function App() {
         needsSetup={needsSetup}
         demoAccounts={demoAccounts}
         initialPortal={authPortal}
+        initialTab={authInitialTab}
+        initialAccountType={authInitialAccountType}
         onClose={() => setAuthModalOpen(false)}
         onSetupComplete={() => setNeedsSetup(false)}
         onAuthenticated={(user, message) => {
           setAuthUser(user);
           setAuthModalOpen(false);
-          setActiveTab(getHomeTabForRole(user.role));
+          const nextTab = getHomeTabForRole(user.role);
+          setActiveTab(nextTab);
+          if (user.role === 'admin') {
+            window.history.replaceState(null, '', '/admin/dashboard');
+          } else {
+            window.history.replaceState(null, '', `/#/${nextTab}`);
+          }
           setDoctorWizardOpen(Boolean(user.role === 'doctor' && !user.schedule_configured));
           notify(message, 'success');
           loadAuthenticatedWorkspace(user);

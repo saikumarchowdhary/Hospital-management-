@@ -14,6 +14,8 @@ import {
   Megaphone,
   ClipboardCheck,
   Lock,
+  Building2,
+  UserPlus,
 } from 'lucide-react';
 import { apiRequest, setAccessToken } from '../lib/api';
 
@@ -21,8 +23,18 @@ const CONSENT_VERSION = 'v2.0';
 const CONSENT_TEXT =
   'I consent to MediCore HMS storing and processing my personal identity, care records, and appointments under hospital privacy safeguards.';
 
-export type LoginPortalType = 'patient' | 'staff' | 'admin' | 'hr_publisher';
+export type LoginPortalType =
+  | 'patient'
+  | 'staff'
+  | 'admin'
+  | 'department_admin'
+  | 'hr'
+  | 'publisher'
+  | 'approver'
+  | 'hr_publisher';
+
 export type HrPubSubRole = 'hr' | 'publisher' | 'approver';
+export type AccountTypeOption = 'patient' | 'candidate' | 'doctor' | 'staff' | 'admin' | 'department_admin';
 
 interface AuthModalProps {
   open: boolean;
@@ -30,6 +42,8 @@ interface AuthModalProps {
   needsSetup: boolean;
   demoAccounts: any[];
   initialPortal?: LoginPortalType;
+  initialTab?: 'login' | 'register';
+  initialAccountType?: AccountTypeOption;
   onClose: () => void;
   onAuthenticated: (user: any, message: string) => void;
   onSetupComplete: () => void;
@@ -41,11 +55,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   needsSetup,
   demoAccounts,
   initialPortal = 'patient',
+  initialTab = 'login',
+  initialAccountType,
   onClose,
   onAuthenticated,
   onSetupComplete,
 }) => {
-  const [tab, setTab] = useState<'login' | 'register' | 'forgot'>('login');
+  const [tab, setTab] = useState<'login' | 'register' | 'forgot'>(initialTab);
   const [portal, setPortal] = useState<LoginPortalType>(initialPortal);
   const [patientSubRole, setPatientSubRole] = useState<'patient' | 'candidate'>('patient');
   const [hrPubRole, setHrPubRole] = useState<HrPubSubRole>('hr');
@@ -71,14 +87,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [resetNewPass, setResetNewPass] = useState('');
   const [showResetPass, setShowResetPass] = useState(false);
 
-  // Unified Sign-Up
-  const [regMeta, setRegMeta] = useState<{ staffRoles: any[]; departments: any[]; branches: any[]; specialties: any[] }>({
+  // Registration Metadata
+  const [regMeta, setRegMeta] = useState<{
+    staffRoles: any[];
+    departments: any[];
+    branches: any[];
+    specialties: any[];
+    isDemoVerificationMode?: boolean;
+    demoAdminVerificationLabel?: string | null;
+  }>({
     staffRoles: [],
     departments: [],
     branches: [],
     specialties: [],
+    isDemoVerificationMode: false,
+    demoAdminVerificationLabel: null,
   });
-  const [accountType, setAccountType] = useState<'patient' | 'candidate' | 'doctor' | 'staff'>('patient');
+
+  const [accountType, setAccountType] = useState<AccountTypeOption>('patient');
   const [showRegPass, setShowRegPass] = useState(false);
   const [reg, setReg] = useState({
     full_name: '',
@@ -97,6 +123,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     department_id: '',
     specialty_id: '',
     employee_id: '',
+    designation: '',
+    verification_code: '',
     qualification: '',
     medical_registration_number: '',
     medical_council: '',
@@ -115,17 +143,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     setPortal(initialPortal);
+    if (initialPortal === 'hr') setHrPubRole('hr');
+    if (initialPortal === 'publisher') setHrPubRole('publisher');
+    if (initialPortal === 'approver') setHrPubRole('approver');
   }, [initialPortal]);
+
+  useEffect(() => {
+    if (!open) return;
+    setTab(initialTab);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setAccountType(initialAccountType || 'patient');
+  }, [open, initialTab, initialAccountType]);
 
   useEffect(() => {
     if (!open || needsSetup) return;
     apiRequest('/api/auth/registration-meta')
       .then((meta) => {
         setRegMeta({
-          staffRoles: (meta.staffRoles || []).filter((r: any) => r.code !== 'doctor' && r.code !== 'admin'),
+          staffRoles: (meta.staffRoles || []).filter((r: any) => r.code !== 'doctor' && r.code !== 'admin' && r.code !== 'department_admin'),
           departments: meta.departments || [],
           branches: meta.branches || [],
           specialties: meta.specialties || [],
+          isDemoVerificationMode: Boolean(meta.isDemoVerificationMode),
+          demoAdminVerificationLabel: meta.demoAdminVerificationLabel || null,
         });
         setReg((prev) => ({
           ...prev,
@@ -186,6 +227,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         payload.expected_role = patientSubRole;
       } else if (portal === 'admin') {
         payload.expected_role = 'admin';
+      } else if (portal === 'department_admin') {
+        payload.expected_role = 'department_admin';
+      } else if (portal === 'hr') {
+        payload.expected_role = 'hr';
+      } else if (portal === 'publisher') {
+        payload.expected_role = 'publisher';
+      } else if (portal === 'approver') {
+        payload.expected_role = 'approver';
       } else if (portal === 'hr_publisher') {
         payload.expected_role = hrPubRole;
       }
@@ -194,6 +243,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         method: 'POST',
         body: payload,
       });
+      if (portal === 'admin' && res.user?.role !== 'admin') {
+        await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {});
+        setAccessToken(null);
+        setErrorMsg('You do not have admin access.');
+        return;
+      }
       setAccessToken(res.token || res.accessToken);
       onAuthenticated(res.user, `Signed in as ${res.user.full_name} (${res.user.role_name}).`);
     } catch (err: any) {
@@ -247,6 +302,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMsg('Password must be at least 8 characters and include a number.');
       return;
     }
+
     if (accountType === 'patient' && !reg.consent) {
       setErrorMsg('Please accept the hospital privacy consent terms.');
       return;
@@ -254,6 +310,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setBusy(true);
     try {
+      if (accountType === 'admin' || accountType === 'department_admin') {
+        const res = await apiRequest('/api/auth/register-admin-hr', {
+          method: 'POST',
+          body: {
+            account_type: accountType,
+            full_name: reg.full_name.trim(),
+            email: reg.email.trim(),
+            mobile: reg.mobile.trim(),
+            employee_id: reg.employee_id.trim(),
+            department_id: Number(reg.department_id),
+            designation: reg.designation.trim(),
+            password: reg.password,
+            confirm_password: reg.confirm,
+            verification_code: reg.verification_code.trim() || 'ADMIN123',
+          },
+        });
+        setAccessToken(res.token || res.accessToken);
+        onAuthenticated(res.user, `Welcome ${res.user.full_name}! ${res.user.role_name} account created.`);
+        return;
+      }
+
       const hasFile = Boolean((accountType === 'doctor' && (photoFile || licenceFile)) || (accountType === 'staff' && staffDocFile));
       let body: any;
       if (hasFile) {
@@ -377,15 +454,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   const PORTAL_CARDS: Array<{ id: LoginPortalType; title: string; subtitle: string; icon: any; accent: string }> = [
-    { id: 'patient', title: 'Patient Login', subtitle: 'Patient EHR & Careers', icon: User, accent: 'text-blue-600 bg-blue-50 border-blue-200' },
-    { id: 'staff', title: 'Hospital Staff Login', subtitle: 'Doctors, Nurses & Clinical Ops', icon: Stethoscope, accent: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
-    { id: 'admin', title: 'Administrator Login', subtitle: 'System Governance & RBAC', icon: Shield, accent: 'text-slate-900 bg-slate-100 border-slate-300' },
-    { id: 'hr_publisher', title: 'HR / Publisher Login', subtitle: 'HR, Publisher & Approver', icon: Briefcase, accent: 'text-indigo-600 bg-indigo-50 border-indigo-200' },
+    { id: 'patient', title: 'Patient / Candidate', subtitle: 'EHR & Careers', icon: User, accent: 'text-cyan-700 bg-cyan-50 border-cyan-200' },
+    { id: 'staff', title: 'Hospital Staff', subtitle: 'Doctors & Clinical Ops', icon: Stethoscope, accent: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
+    { id: 'hr', title: 'HR Login', subtitle: 'Workforce & Hiring', icon: Briefcase, accent: 'text-blue-700 bg-blue-50 border-blue-200' },
+    { id: 'department_admin', title: 'Department Admin', subtitle: 'Scoped Dept Operations', icon: Building2, accent: 'text-indigo-700 bg-indigo-50 border-indigo-200' },
+    { id: 'admin', title: 'Admin', subtitle: 'System Admin & RBAC', icon: Shield, accent: 'text-slate-900 bg-slate-100 border-slate-300' },
+    { id: 'publisher', title: 'Publisher', subtitle: 'Notices & Campaigns', icon: Megaphone, accent: 'text-purple-700 bg-purple-50 border-purple-200' },
+    { id: 'approver', title: 'Approver', subtitle: 'Compliance Sign-off', icon: ClipboardCheck, accent: 'text-amber-700 bg-amber-50 border-amber-200' },
   ];
 
   const portalHeading =
     portal === 'admin'
-      ? 'Administrator Secure Login'
+      ? 'Admin Secure Login'
+      : portal === 'department_admin'
+      ? 'Department Admin Secure Login'
+      : portal === 'hr'
+      ? 'HR / Workforce Portal Login'
+      : portal === 'publisher'
+      ? 'Publisher Portal Login'
+      : portal === 'approver'
+      ? 'Approver Portal Login'
       : portal === 'hr_publisher'
       ? hrPubRole === 'hr'
         ? 'HR / Hiring Team Login'
@@ -400,7 +488,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const identifierPlaceholder =
     portal === 'admin'
-      ? 'Admin ID or Administrator Email'
+      ? 'admin@hospital.org'
+      : portal === 'department_admin'
+      ? 'Department Admin Email or Employee ID'
+      : portal === 'hr' || portal === 'publisher' || portal === 'approver'
+      ? `${portal.toUpperCase()} Email or Employee ID`
       : portal === 'hr_publisher'
       ? `${hrPubRole.toUpperCase()} ID or Work Email`
       : portal === 'staff'
@@ -420,13 +512,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 : tab === 'login'
                 ? portalHeading
                 : tab === 'register'
-                ? 'Create Your Account'
+                ? 'Create Account'
                 : 'Reset Password'}
             </h3>
             <p className="text-xs text-slate-500">
               {needsSetup
                 ? 'Create the first Administrator account to initialize your hospital instance'
-                : 'Role-protected hospital access with four dedicated entry portals'}
+                : 'Department-aware hospital authentication & role-protected portal access'}
             </p>
           </div>
           {canClose && (
@@ -440,6 +532,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
             <button
               type="button"
+              data-testid="tab-signin"
               onClick={() => {
                 setTab('login');
                 setErrorMsg(null);
@@ -449,26 +542,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 tab === 'login' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'
               }`}
             >
-              Portal Sign In
+              Sign In
             </button>
             <button
               type="button"
+              data-testid="tab-create-account"
               onClick={() => {
                 setTab('register');
                 setErrorMsg(null);
                 setSuccessMsg(null);
               }}
-              className={`py-2 rounded-lg text-xs font-semibold ${
+              className={`py-2 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 ${
                 tab === 'register' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600'
               }`}
             >
-              Create Account
+              <UserPlus className="w-3.5 h-3.5" /> Create Account
             </button>
           </div>
         )}
 
         {errorMsg && (
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
+          <div role="alert" className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{errorMsg}</span>
           </div>
@@ -534,10 +628,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </form>
         ) : tab === 'login' ? (
           <>
-            {/* 4 Clear Login Entry Points */}
+            {/* Dedicated Role-Based Login Portals */}
             <div>
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                Select Login Portal
+                Select Role Login Portal
               </p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {PORTAL_CARDS.map((card) => {
@@ -594,7 +688,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             {portal === 'hr_publisher' && (
               <div className="p-2.5 bg-indigo-50/60 border border-indigo-200 rounded-xl space-y-1.5">
-                <p className="text-[11px] font-semibold text-indigo-900">Select HR / Publisher Department Role:</p>
+                <p className="text-[11px] font-semibold text-indigo-900">Select HR / Publisher Role:</p>
                 <div className="grid grid-cols-3 gap-2">
                   {[
                     { id: 'hr', label: 'HR / Hiring Team', icon: Briefcase },
@@ -627,11 +721,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
             )}
 
-            {portal === 'admin' && (
+            {(portal === 'admin' || portal === 'department_admin') && (
               <div className="p-2.5 bg-slate-900 text-white rounded-xl flex items-center gap-2.5 text-xs">
                 <Lock className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
-                  <strong>Restricted Administrator Entry:</strong> Only authorized Hospital Administrators may authenticate here. All attempts are audit-logged.
+                  {portal === 'department_admin'
+                    ? 'Department Admin Entry: Access is strictly scoped to your assigned hospital department.'
+                    : 'Super Admin Entry: Full governance across all hospital departments, RBAC & audit logs.'}
                 </span>
               </div>
             )}
@@ -639,10 +735,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <form onSubmit={submitLogin} className="space-y-3">
               <div>
                 <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  {portal === 'admin' ? 'Admin ID / Email' : 'Email or User ID'}
+                  {portal === 'admin'
+                    ? 'Admin Email Address'
+                    : portal === 'department_admin'
+                    ? 'Email Address or Employee ID'
+                    : 'Email, Employee ID or User ID'}
                 </label>
                 <input
                   required
+                  type={portal === 'admin' ? 'email' : 'text'}
                   value={loginId}
                   onChange={(e) => setLoginId(e.target.value)}
                   placeholder={identifierPlaceholder}
@@ -693,13 +794,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 className={`w-full py-2.5 font-semibold text-sm rounded-xl text-white flex items-center justify-center gap-2 ${
                   portal === 'admin'
                     ? 'bg-slate-900 hover:bg-slate-800'
-                    : portal === 'hr_publisher'
+                    : portal === 'department_admin'
+                    ? 'bg-indigo-600 hover:bg-indigo-700'
+                    : portal === 'hr' || portal === 'publisher' || portal === 'approver' || portal === 'hr_publisher'
                     ? 'bg-indigo-600 hover:bg-indigo-700'
                     : 'bg-blue-600 hover:bg-blue-700'
                 }`}
               >
-                {portal === 'admin' && <Lock className="w-4 h-4" />}
-                <span>{busy ? 'Authenticating...' : portal === 'admin' ? 'Secure Login' : 'Sign In'}</span>
+                {(portal === 'admin' || portal === 'department_admin') && <Lock className="w-4 h-4" />}
+                <span>
+                  {busy
+                    ? 'Authenticating...'
+                    : portal === 'admin' || portal === 'department_admin'
+                    ? 'Secure Login'
+                    : 'Sign In'}
+                </span>
               </button>
             </form>
 
@@ -707,7 +816,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div className="pt-3 border-t border-slate-100">
                 <p className="text-[11px] font-semibold text-slate-500 mb-2">Quick Portal Sign-In (Staging/Demo Mode)</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
-                  {demoAccounts.slice(0, 18).map((acc) => (
+                  {demoAccounts.slice(0, 20).map((acc) => (
                     <button
                       key={acc.email}
                       type="button"
@@ -788,199 +897,268 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         ) : (
           <form onSubmit={submitRegister} className="space-y-3">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">I am a...</label>
-              <select
-                value={accountType}
-                onChange={(e) => setAccountType(e.target.value as any)}
-                className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm font-semibold"
-              >
-                <option value="patient">Patient (Instant Portal Access & Patient ID)</option>
-                <option value="candidate">Candidate (Jobs & My Applications)</option>
-                <option value="doctor">Doctor (Licence Verification Required)</option>
-                <option value="staff">Hospital Staff (Administrator Approval Required)</option>
-              </select>
-              <p className="text-[11px] text-slate-400 mt-1">Administrator accounts are provisioned only by Hospital Administration.</p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <input
-                required
-                value={reg.full_name}
-                onChange={(e) => setReg({ ...reg, full_name: e.target.value })}
-                placeholder="Full Legal Name"
-                className="sm:col-span-2 w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
-              <input
-                required
-                type="email"
-                value={reg.email}
-                onChange={(e) => setReg({ ...reg, email: e.target.value })}
-                placeholder={accountType === 'doctor' || accountType === 'staff' ? 'Work Email' : 'Email Address'}
-                className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
-              <input
-                required
-                value={reg.mobile}
-                onChange={(e) => setReg({ ...reg, mobile: e.target.value })}
-                placeholder="Mobile Number (+1-555-0199)"
-                className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
-              />
-            </div>
-
-            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600 font-medium flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-blue-600" /> Optional Email Verification (OTP)
-                </span>
-                <button type="button" onClick={sendOtp} className="px-2.5 py-1 bg-white border border-slate-200 rounded-lg font-semibold text-blue-700">
-                  Send Code
-                </button>
-              </div>
-              {otpSent && (
-                <div className="flex items-center gap-2">
-                  <input
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value)}
-                    placeholder="6-digit code"
-                    className="flex-1 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs"
-                  />
-                  <button type="button" onClick={verifyOtp} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold">
-                    Verify
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">I am a...</label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                {[
+                  { id: 'patient', label: 'Patient' },
+                  { id: 'doctor', label: 'Doctor' },
+                  { id: 'candidate', label: 'Candidate' },
+                  { id: 'staff', label: 'Hospital Staff' },
+                  { id: 'department_admin', label: 'Dept Admin' },
+                  { id: 'admin', label: 'Admin' },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-testid={`reg-type-${opt.id}`}
+                    onClick={() => {
+                      setAccountType(opt.id as AccountTypeOption);
+                      setErrorMsg(null);
+                    }}
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition-all ${
+                      accountType === opt.id
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    {opt.label}
                   </button>
-                </div>
-              )}
-              {otpHint && <div className={`text-[11px] font-medium ${otpVerified ? 'text-emerald-700' : 'text-slate-600'}`}>{otpHint}</div>}
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1.5">
+                {accountType === 'admin' || accountType === 'department_admin'
+                  ? 'Admin and Department Admin creation requires the Admin Verification Code (ADMIN123).'
+                  : 'Register a patient, candidate, doctor, or hospital staff member.'}
+              </p>
             </div>
 
-            {accountType === 'patient' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <input type="date" value={reg.dob} onChange={(e) => setReg({ ...reg, dob: e.target.value })} className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs" />
-                <select value={reg.gender} onChange={(e) => setReg({ ...reg, gender: e.target.value })} className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs">
-                  <option value="Female">Female</option>
-                  <option value="Male">Male</option>
-                  <option value="Other">Other</option>
-                </select>
-                <input
-                  value={reg.address}
-                  onChange={(e) => setReg({ ...reg, address: e.target.value })}
-                  placeholder="Residential Address"
-                  className="sm:col-span-2 px-3.5 py-2 bg-slate-100 rounded-xl text-xs"
-                />
-                <input
-                  value={reg.emergency_contact_name}
-                  onChange={(e) => setReg({ ...reg, emergency_contact_name: e.target.value })}
-                  placeholder="Emergency Contact Name"
-                  className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs"
-                />
-                <input
-                  value={reg.emergency_contact_phone}
-                  onChange={(e) => setReg({ ...reg, emergency_contact_phone: e.target.value })}
-                  placeholder="Emergency Contact Phone"
-                  className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs"
-                />
-              </div>
-            )}
+            <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input
+                    required
+                    value={reg.full_name}
+                    onChange={(e) => setReg({ ...reg, full_name: e.target.value })}
+                    placeholder="Full Legal Name"
+                    className="sm:col-span-2 w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
+                  />
+                  <input
+                    required
+                    type="email"
+                    value={reg.email}
+                    onChange={(e) => setReg({ ...reg, email: e.target.value })}
+                    placeholder={accountType === 'doctor' || accountType === 'staff' ? 'Work Email' : 'Email Address'}
+                    className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
+                  />
+                  <input
+                    required
+                    value={reg.mobile}
+                    onChange={(e) => setReg({ ...reg, mobile: e.target.value })}
+                    placeholder="Mobile Number (+1-555-0199)"
+                    className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
+                  />
+                </div>
 
-            {accountType === 'doctor' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
-                <input
-                  required
-                  value={reg.medical_registration_number}
-                  onChange={(e) => setReg({ ...reg, medical_registration_number: e.target.value })}
-                  placeholder="Medical Registration Number *"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <input
-                  required
-                  value={reg.medical_council}
-                  onChange={(e) => setReg({ ...reg, medical_council: e.target.value })}
-                  placeholder="Medical Council *"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <select value={reg.branch_id} onChange={(e) => setReg({ ...reg, branch_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
-                  {regMeta.branches.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <select value={reg.department_id} onChange={(e) => setReg({ ...reg, department_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
-                  {regMeta.departments.map((d) => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
-                  ))}
-                </select>
-                <select value={reg.specialty_id} onChange={(e) => setReg({ ...reg, specialty_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
-                  {regMeta.specialties.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-                <input
-                  required
-                  value={reg.qualification}
-                  onChange={(e) => setReg({ ...reg, qualification: e.target.value })}
-                  placeholder="Qualifications (e.g. MBBS, MD) *"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <input
-                  type="number"
-                  min={0}
-                  value={reg.experience_years}
-                  onChange={(e) => setReg({ ...reg, experience_years: e.target.value })}
-                  placeholder="Experience (yrs)"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <input
-                  type="number"
-                  min={10}
-                  value={reg.consultation_fee}
-                  onChange={(e) => setReg({ ...reg, consultation_fee: e.target.value })}
-                  placeholder="Consultation Fee ($)"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <label className="text-[11px] text-slate-600">
-                  Photo (Optional)
-                  <input type="file" accept="image/png,image/jpeg" onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-[11px]" />
-                </label>
-                <label className="text-[11px] text-slate-600">
-                  Medical Licence (PDF/Image)
-                  <input type="file" accept=".pdf,image/png,image/jpeg" onChange={(e) => setLicenceFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-[11px]" />
-                </label>
-              </div>
-            )}
+                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-600 font-medium flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-blue-600" /> Optional Email Verification (OTP)
+                    </span>
+                    <button type="button" onClick={sendOtp} className="px-2.5 py-1 bg-white border border-slate-200 rounded-lg font-semibold text-blue-700">
+                      Send Code
+                    </button>
+                  </div>
+                  {otpSent && (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={otpCode}
+                        onChange={(e) => setOtpCode(e.target.value)}
+                        placeholder="6-digit code"
+                        className="flex-1 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs"
+                      />
+                      <button type="button" onClick={verifyOtp} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold">
+                        Verify
+                      </button>
+                    </div>
+                  )}
+                  {otpHint && <div className={`text-[11px] font-medium ${otpVerified ? 'text-emerald-700' : 'text-slate-600'}`}>{otpHint}</div>}
+                </div>
 
-            {accountType === 'staff' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
-                <select value={reg.requested_role} onChange={(e) => setReg({ ...reg, requested_role: e.target.value })} className="sm:col-span-2 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold">
-                  {regMeta.staffRoles.map((r) => (
-                    <option key={r.code} value={r.code}>{r.name}</option>
-                  ))}
-                </select>
-                <select value={reg.branch_id} onChange={(e) => setReg({ ...reg, branch_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
-                  {regMeta.branches.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <select value={reg.department_id} onChange={(e) => setReg({ ...reg, department_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
-                  {regMeta.departments.map((d) => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
-                  ))}
-                </select>
-                <input
-                  value={reg.employee_id}
-                  onChange={(e) => setReg({ ...reg, employee_id: e.target.value })}
-                  placeholder="Employee / Badge ID"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <input
-                  value={reg.qualification}
-                  onChange={(e) => setReg({ ...reg, qualification: e.target.value })}
-                  placeholder="Qualification"
-                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                />
-                <label className="sm:col-span-2 text-[11px] text-slate-600">
-                  ID / Credential Upload (Optional)
-                  <input type="file" accept=".pdf,image/*" onChange={(e) => setStaffDocFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-[11px]" />
-                </label>
-              </div>
-            )}
+                {accountType === 'patient' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <input type="date" value={reg.dob} onChange={(e) => setReg({ ...reg, dob: e.target.value })} className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs" />
+                    <select value={reg.gender} onChange={(e) => setReg({ ...reg, gender: e.target.value })} className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs">
+                      <option value="Female">Female</option>
+                      <option value="Male">Male</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <input
+                      value={reg.address}
+                      onChange={(e) => setReg({ ...reg, address: e.target.value })}
+                      placeholder="Residential Address"
+                      className="sm:col-span-2 px-3.5 py-2 bg-slate-100 rounded-xl text-xs"
+                    />
+                    <input
+                      value={reg.emergency_contact_name}
+                      onChange={(e) => setReg({ ...reg, emergency_contact_name: e.target.value })}
+                      placeholder="Emergency Contact Name"
+                      className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs"
+                    />
+                    <input
+                      value={reg.emergency_contact_phone}
+                      onChange={(e) => setReg({ ...reg, emergency_contact_phone: e.target.value })}
+                      placeholder="Emergency Contact Phone"
+                      className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs"
+                    />
+                  </div>
+                )}
+
+                {accountType === 'doctor' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <input
+                      required
+                      value={reg.medical_registration_number}
+                      onChange={(e) => setReg({ ...reg, medical_registration_number: e.target.value })}
+                      placeholder="Medical Registration Number *"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <input
+                      required
+                      value={reg.medical_council}
+                      onChange={(e) => setReg({ ...reg, medical_council: e.target.value })}
+                      placeholder="Medical Council *"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <select value={reg.branch_id} onChange={(e) => setReg({ ...reg, branch_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
+                      {regMeta.branches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                    <select value={reg.department_id} onChange={(e) => setReg({ ...reg, department_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
+                      {regMeta.departments.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </select>
+                    <select value={reg.specialty_id} onChange={(e) => setReg({ ...reg, specialty_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
+                      {regMeta.specialties.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    <input
+                      required
+                      value={reg.qualification}
+                      onChange={(e) => setReg({ ...reg, qualification: e.target.value })}
+                      placeholder="Qualifications (e.g. MBBS, MD) *"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      value={reg.experience_years}
+                      onChange={(e) => setReg({ ...reg, experience_years: e.target.value })}
+                      placeholder="Experience (yrs)"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <input
+                      type="number"
+                      min={10}
+                      value={reg.consultation_fee}
+                      onChange={(e) => setReg({ ...reg, consultation_fee: e.target.value })}
+                      placeholder="Consultation Fee ($)"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <label className="text-[11px] text-slate-600">
+                      Photo (Optional)
+                      <input type="file" accept="image/png,image/jpeg" onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-[11px]" />
+                    </label>
+                    <label className="text-[11px] text-slate-600">
+                      Medical Licence (PDF/Image)
+                      <input type="file" accept=".pdf,image/png,image/jpeg" onChange={(e) => setLicenceFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-[11px]" />
+                    </label>
+                  </div>
+                )}
+
+                {accountType === 'staff' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <select value={reg.requested_role} onChange={(e) => setReg({ ...reg, requested_role: e.target.value })} className="sm:col-span-2 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold">
+                      {regMeta.staffRoles.map((r) => (
+                        <option key={r.code} value={r.code}>{r.name}</option>
+                      ))}
+                    </select>
+                    <select value={reg.branch_id} onChange={(e) => setReg({ ...reg, branch_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
+                      {regMeta.branches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                    <select value={reg.department_id} onChange={(e) => setReg({ ...reg, department_id: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs">
+                      {regMeta.departments.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </select>
+                    <input
+                      value={reg.employee_id}
+                      onChange={(e) => setReg({ ...reg, employee_id: e.target.value })}
+                      placeholder="Employee / Badge ID"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <input
+                      value={reg.qualification}
+                      onChange={(e) => setReg({ ...reg, qualification: e.target.value })}
+                      placeholder="Qualification"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <label className="sm:col-span-2 text-[11px] text-slate-600">
+                      ID / Credential Upload (Optional)
+                      <input type="file" accept=".pdf,image/*" onChange={(e) => setStaffDocFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-[11px]" />
+                    </label>
+                  </div>
+                )}
+
+                {(accountType === 'admin' || accountType === 'department_admin') && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-900 text-white rounded-xl">
+                    <div className="sm:col-span-2 text-xs font-bold text-amber-300 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <Shield className="w-4 h-4" />
+                        <span>{accountType === 'admin' ? 'Super Admin Registration' : 'Department Admin Registration'}</span>
+                      </span>
+                      <span className="text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded font-mono font-bold">
+                        ADMIN 123
+                      </span>
+                    </div>
+                    <input
+                      required
+                      value={reg.employee_id}
+                      onChange={(e) => setReg({ ...reg, employee_id: e.target.value })}
+                      placeholder="Employee ID / Badge No *"
+                      className="px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs placeholder:text-slate-400"
+                    />
+                    <input
+                      required
+                      value={reg.designation}
+                      onChange={(e) => setReg({ ...reg, designation: e.target.value })}
+                      placeholder="Designation (e.g. Dept Head) *"
+                      className="px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs placeholder:text-slate-400"
+                    />
+                    <select
+                      required
+                      value={reg.department_id}
+                      onChange={(e) => setReg({ ...reg, department_id: e.target.value })}
+                      className="sm:col-span-2 px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs"
+                    >
+                      <option value="">Select Department *</option>
+                      {regMeta.departments.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name} ({d.branch_name || 'Main'})</option>
+                      ))}
+                    </select>
+                    <input
+                      required
+                      value={reg.verification_code}
+                      onChange={(e) => setReg({ ...reg, verification_code: e.target.value })}
+                      placeholder="Admin Verification Code (Enter ADMIN123) *"
+                      className="sm:col-span-2 px-3 py-2 bg-slate-800 text-white border border-slate-700 rounded-lg text-xs placeholder:text-slate-400 font-mono"
+                    />
+                  </div>
+                )}
+              </>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="relative">
@@ -1017,7 +1195,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </label>
             )}
 
-            <button disabled={busy} type="submit" className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl">
+            <button
+              disabled={busy}
+              type="submit"
+              className={`w-full py-2.5 font-semibold text-sm rounded-xl text-white ${
+                accountType === 'admin' || accountType === 'department_admin'
+                  ? 'bg-slate-900 hover:bg-slate-800'
+                  : 'bg-blue-600 hover:bg-blue-700'
+              }`}
+            >
               {busy
                 ? 'Submitting...'
                 : accountType === 'patient'
@@ -1026,6 +1212,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 ? 'Create Candidate Account'
                 : accountType === 'doctor'
                 ? 'Submit Doctor Verification'
+                : accountType === 'admin'
+                ? 'Create Admin Account'
+                : accountType === 'department_admin'
+                ? 'Create Department Admin Account'
                 : 'Submit Staff Request'}
             </button>
           </form>

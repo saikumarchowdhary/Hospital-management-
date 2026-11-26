@@ -144,14 +144,29 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
   router.get('/', requirePermission('patients.read_all'), asyncHandler(async (req, res) => {
     const q = (req.query.q || '').trim();
     const like = `%${q}%`;
+    const isDeptAdmin = req.user.role === 'department_admin';
+    if (isDeptAdmin && !req.user.department_id) {
+      throw new AppError(403, 'Department Admin account has no assigned department.');
+    }
+    const requestedDept = req.query.department_id || req.query.departmentId;
+    if (isDeptAdmin && requestedDept && Number(requestedDept) !== Number(req.user.department_id)) {
+      throw new AppError(403, 'Access denied to other departments.');
+    }
+    const deptFilterSql = isDeptAdmin
+      ? `AND (EXISTS (SELECT 1 FROM appointments ap WHERE ap.patient_id = p.id AND ap.department_id = ?) OR EXISTS (SELECT 1 FROM admissions ad WHERE ad.patient_id = p.id AND ad.department_id = ?))`
+      : '';
+    const params = isDeptAdmin
+      ? [like, like, like, like, req.user.department_id, req.user.department_id]
+      : [like, like, like, like];
     const rows = db.all(
       `SELECT p.id, p.patient_code, p.dob, p.gender, p.blood_group, p.address,
               u.id as user_id, u.full_name, u.email, u.phone, u.is_active, p.created_at
        FROM patient_profiles p
        JOIN users u ON u.id = p.user_id
-       WHERE u.full_name LIKE ? OR p.patient_code LIKE ? OR u.email LIKE ? OR COALESCE(u.phone,'') LIKE ?
+       WHERE (u.full_name LIKE ? OR p.patient_code LIKE ? OR u.email LIKE ? OR COALESCE(u.phone,'') LIKE ?)
+       ${deptFilterSql}
        ORDER BY p.id DESC LIMIT 100`,
-      [like, like, like, like]
+      params
     );
     res.json({ patients: rows });
   }));
@@ -214,6 +229,16 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
     if (req.user.role !== 'patient' && !req.user.permissions.includes('patients.read_all')) {
       throw new AppError(403, 'Insufficient permissions.');
     }
+    if (req.user.role === 'department_admin') {
+      const hasDeptLink = db.get(
+        `SELECT 1 as ok FROM appointments WHERE patient_id = ? AND department_id = ?
+         UNION SELECT 1 as ok FROM admissions WHERE patient_id = ? AND department_id = ? LIMIT 1`,
+        [pid, req.user.department_id, pid, req.user.department_id]
+      );
+      if (!hasDeptLink) {
+        throw new AppError(403, 'Access denied: Patient has no records in your assigned department.');
+      }
+    }
 
     const patient = db.get(
       `SELECT p.*, u.full_name, u.email, u.phone, u.is_active
@@ -227,8 +252,9 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
        FROM appointments a
        JOIN doctor_profiles doc ON doc.id = a.doctor_id JOIN users du ON du.id = doc.user_id
        JOIN departments d ON d.id = a.department_id
-       WHERE a.patient_id = ? ORDER BY a.appointment_date DESC`,
-      [pid]
+       WHERE a.patient_id = ? ${req.user.role === 'department_admin' ? 'AND a.department_id = ?' : ''}
+       ORDER BY a.appointment_date DESC`,
+      req.user.role === 'department_admin' ? [pid, req.user.department_id] : [pid]
     );
 
     const canClinical = canAccessClinicalRecord(db, req.user, pid);

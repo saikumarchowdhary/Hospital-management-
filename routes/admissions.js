@@ -10,7 +10,12 @@ export function createAdmissionsRouter(db, broker, authenticate) {
   const router = express.Router();
   router.use(authenticate);
 
-  router.get('/', requirePermission('admissions.manage', 'patients.read_all'), asyncHandler(async (_req, res) => {
+  router.get('/', requirePermission('admissions.manage', 'patients.read_all'), asyncHandler(async (req, res) => {
+    const isDeptAdmin = req.user.role === 'department_admin';
+    const requestedDept = req.query.department_id || req.query.departmentId;
+    if (isDeptAdmin && requestedDept && Number(requestedDept) !== Number(req.user.department_id)) {
+      throw new AppError(403, 'Access denied to other departments.');
+    }
     const admissions = db.all(
       `SELECT a.*, pu.full_name as patient_name, p.patient_code,
               du.full_name as doctor_name, d.name as department_name,
@@ -22,7 +27,9 @@ export function createAdmissionsRouter(db, broker, authenticate) {
        LEFT JOIN beds b ON b.id = a.bed_id
        LEFT JOIN rooms r ON r.id = b.room_id
        LEFT JOIN wards w ON w.id = r.ward_id
-       ORDER BY a.id DESC`
+       ${isDeptAdmin ? 'WHERE a.department_id = ?' : ''}
+       ORDER BY a.id DESC`,
+      isDeptAdmin ? [req.user.department_id] : []
     );
     res.json({ admissions });
   }));

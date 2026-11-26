@@ -15,11 +15,32 @@ export function getAdminDashboardStats(db) {
     `SELECT COUNT(*) as c FROM medicines m JOIN pharmacy_inventory pi ON pi.medicine_id = m.id WHERE pi.total_quantity <= m.reorder_level`
   ).c;
   const outstandingPayments = db.get(`SELECT COALESCE(SUM(balance_due), 0) as s FROM invoices WHERE status IN ('Pending','Processing')`).s;
-  const totalRevenue = db.get(`SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE status = 'Paid'`).s;
-  const todaysRevenue = db.get(`SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE date(paid_at) = date('now') AND status = 'Paid'`).s;
+  const totalRevenue = db.get(`SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE LOWER(status) = 'paid'`).s;
+  const todaysRevenue = db.get(`SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE date(paid_at) = date('now') AND LOWER(status) = 'paid'`).s;
   const systemNotifications = db.get(`SELECT COUNT(*) as c FROM notifications`).c;
   const pendingNoticeApprovals = db.get(`SELECT COUNT(*) as c FROM announcements WHERE status IN ('Submitted','Pending Approval','Under Review')`).c;
   const pendingCampaignApprovals = db.get(`SELECT COUNT(*) as c FROM campaigns WHERE status IN ('Submitted','Pending Approval','Under Review')`).c;
+  const prescriptionsLast30DaysTotal = db.get(
+    `SELECT COUNT(*) as c FROM prescriptions WHERE datetime(created_at) >= datetime('now', '-30 days')`
+  ).c;
+  const topPrescribingDoctors30Days = db.all(
+    `SELECT dp.id as doctor_id,
+            du.full_name as doctor_name,
+            COALESCE(sp.name, 'General Medicine') as specialization,
+            COALESCE(d.name, 'Clinical') as department_name,
+            COUNT(r.id) as prescription_count,
+            SUM(CASE WHEN LOWER(r.status) = 'dispensed' THEN 1 ELSE 0 END) as dispensed_count,
+            SUM(CASE WHEN LOWER(r.status) != 'dispensed' THEN 1 ELSE 0 END) as pending_count
+     FROM prescriptions r
+     JOIN doctor_profiles dp ON dp.id = r.doctor_id
+     JOIN users du ON du.id = dp.user_id
+     LEFT JOIN specialties sp ON sp.id = dp.specialty_id
+     LEFT JOIN departments d ON d.id = dp.department_id
+     WHERE datetime(r.created_at) >= datetime('now', '-30 days')
+     GROUP BY dp.id
+     ORDER BY prescription_count DESC, du.full_name ASC
+     LIMIT 5`
+  );
 
   const appointmentsByStatus = db.all('SELECT status as label, COUNT(*) as value FROM appointments GROUP BY status');
   const deptPerformance = db.all(
@@ -27,6 +48,31 @@ export function getAdminDashboardStats(db) {
      FROM departments d LEFT JOIN appointments a ON a.department_id = d.id
      WHERE d.category = 'clinical'
      GROUP BY d.id ORDER BY value DESC LIMIT 6`
+  );
+  const patientDistributionByDepartment = db.all(
+    `SELECT d.id as department_id,
+            d.code as department_code,
+            d.name as department_name,
+            d.category as category,
+            COUNT(DISTINCT pd.patient_id) as patients,
+            COUNT(DISTINCT CASE WHEN pd.source = 'appointment' THEN pd.patient_id END) as appointment_patients,
+            COUNT(DISTINCT CASE WHEN pd.source = 'admission' THEN pd.patient_id END) as inpatient_count
+     FROM departments d
+     LEFT JOIN (
+       SELECT department_id, patient_id, 'appointment' as source
+       FROM appointments
+       WHERE status != 'Cancelled'
+       UNION ALL
+       SELECT department_id, patient_id, 'admission' as source
+       FROM admissions
+       UNION ALL
+       SELECT dp.department_id, c.patient_id, 'consultation' as source
+       FROM consultations c
+       JOIN doctor_profiles dp ON dp.id = c.doctor_id
+     ) pd ON pd.department_id = d.id
+     WHERE d.is_active = 1
+     GROUP BY d.id
+     ORDER BY patients DESC, d.name ASC`
   );
   const bedStatusBreakdown = db.all('SELECT status as label, COUNT(*) as value FROM beds GROUP BY status');
   const revenueByDay = db.all(
@@ -38,6 +84,26 @@ export function getAdminDashboardStats(db) {
      FROM patient_profiles GROUP BY date(created_at) ORDER BY label ASC LIMIT 7`
   );
   const labTurnaround = db.all('SELECT status as label, COUNT(*) as value FROM lab_orders GROUP BY status');
+  const patientsByAgeGroup = db.all(
+    `SELECT 
+       CASE 
+         WHEN CAST((julianday('now') - julianday(dob)) / 365.25 AS INTEGER) <= 18 THEN '0-18'
+         WHEN CAST((julianday('now') - julianday(dob)) / 365.25 AS INTEGER) BETWEEN 19 AND 35 THEN '19-35'
+         WHEN CAST((julianday('now') - julianday(dob)) / 365.25 AS INTEGER) BETWEEN 36 AND 60 THEN '36-60'
+         ELSE '60+'
+       END as name,
+       COUNT(*) as value
+     FROM patient_profiles
+     WHERE dob IS NOT NULL
+     GROUP BY name
+     ORDER BY 
+       CASE name 
+         WHEN '0-18' THEN 1 
+         WHEN '19-35' THEN 2 
+         WHEN '36-60' THEN 3 
+         ELSE 4 
+       END`
+  );
 
   const recentActivity = db.all(
     `SELECT al.action, al.entity_type, al.entity_id, al.actor_role, al.created_at, u.full_name as actor_name
@@ -82,15 +148,25 @@ export function getAdminDashboardStats(db) {
       totalRevenue: Number(totalRevenue.toFixed(2)),
       todaysRevenue: Number(todaysRevenue.toFixed(2)),
       systemNotifications,
-      pendingApprovalsCount: pendingNoticeApprovals + pendingCampaignApprovals
+      pendingApprovalsCount: pendingNoticeApprovals + pendingCampaignApprovals,
+      prescriptionsLast30DaysTotal
     },
     charts: {
       appointmentsByStatus,
       deptPerformance,
+      patientDistributionByDepartment,
       bedStatusBreakdown,
       revenueByDay,
       registrationsTrend,
-      labTurnaround
+      labTurnaround,
+      topPrescribingDoctors30Days,
+      patientsByAgeGroup
+    },
+    patientsByAgeGroup,
+    prescriptionsSummary30Days: {
+      totalCount: prescriptionsLast30DaysTotal,
+      windowDays: 30,
+      topDoctors: topPrescribingDoctors30Days
     },
     recentActivity,
     attentionQueue
