@@ -12,6 +12,7 @@ import { getAdminDashboardStats } from '../services/reports.js';
 import { hydratePrescriptionRow } from './clinical_extras.js';
 import { registerAdminMembersRoutes } from './admin_members.js';
 import { registerAdminSignupsRoutes } from './admin_signups.js';
+import { registerHospitalIdsRoutes } from './hospital_ids.js';
 
 export function createAdminRouter(db, authenticate, uploadDir, broker = null, upload = null) {
   const router = express.Router();
@@ -82,6 +83,7 @@ export function createAdminRouter(db, authenticate, uploadDir, broker = null, up
   router.use(requireRole('admin'));
   registerAdminMembersRoutes(router, db, broker, upload);
   registerAdminSignupsRoutes(router, db, broker);
+  registerHospitalIdsRoutes(router, db, broker);
 
   router.get('/overview', asyncHandler(async (_req, res) => {
     const users = db.all(

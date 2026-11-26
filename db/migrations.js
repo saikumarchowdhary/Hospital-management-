@@ -315,4 +315,51 @@ export function runMigrations(db) {
   ensureCol('payments', 'verified_at', 'TEXT');
   ensureCol('payments', 'upi_submitted_at', 'TEXT');
   ensureCol('payments', 'razorpay_order_id', 'TEXT');
+
+  // Hospital ID / Employee ID system for doctors and hospital staff
+  ensureCol('users', 'hospital_id', 'TEXT');
+  ensureCol('employee_profiles', 'hospital_id', 'TEXT');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hospital_ids (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      hospital_id TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      assigned_role TEXT,
+      department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+      is_used INTEGER NOT NULL DEFAULT 0,
+      used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      used_at TEXT,
+      created_by INTEGER REFERENCES users(id),
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_hospital_ids_lookup ON hospital_ids(hospital_id, is_used);
+    CREATE INDEX IF NOT EXISTS idx_hospital_ids_used ON hospital_ids(is_used);
+  `);
+
+  const hidCount = db.get('SELECT COUNT(*) as cnt FROM hospital_ids');
+  if (!hidCount || hidCount.cnt === 0) {
+    const seedIds = [
+      ['MED001', 'doctor', 'General Medicine Specialist'],
+      ['MED002', 'doctor', 'Cardiology Specialist'],
+      ['MED003', 'nurse', 'Inpatient Nursing Staff'],
+      ['MED004', 'nurse', 'ICU Care Nurse'],
+      ['MED005', 'receptionist', 'Central Reception Desk'],
+      ['MED006', 'pharmacist', 'Inpatient Pharmacy'],
+      ['MED007', 'lab_staff', 'Pathology & Diagnostic Lab'],
+      ['MED008', 'radiologist', 'Medical Imaging & Radiology'],
+      ['MED009', 'accountant', 'Billing & Finance Officer'],
+      ['MED010', null, 'Available Staff / Doctor ID'],
+      ['MED011', null, 'Available Staff / Doctor ID'],
+      ['MED012', null, 'Available Staff / Doctor ID']
+    ];
+    for (const [code, role, notes] of seedIds) {
+      db.run(
+        `INSERT OR IGNORE INTO hospital_ids (hospital_id, assigned_role, notes) VALUES (?, ?, ?)`,
+        [code, role, notes]
+      );
+    }
+  }
 }
+
