@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Shield, UserPlus, CheckCircle2, AlertCircle, Building2, Mail, Lock } from 'lucide-react';
+import { Shield, UserPlus, CheckCircle2, AlertCircle, Building2, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { apiRequest } from '../lib/api';
+import { PasswordStrengthMeter } from './PasswordStrengthMeter';
+import { evaluatePasswordStrength } from '../lib/passwordValidation';
 
 interface AddAdminPanelProps {
   onNotify: (msg: string, tone?: 'success' | 'error') => void;
@@ -14,6 +16,7 @@ export const AddAdminPanel: React.FC<AddAdminPanelProps> = ({ onNotify, refreshS
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [showPass, setShowPass] = useState(false);
   const [form, setForm] = useState({
     full_name: '',
     email: '',
@@ -199,28 +202,40 @@ export const AddAdminPanel: React.FC<AddAdminPanelProps> = ({ onNotify, refreshS
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   required
-                  type="password"
+                  type={showPass ? 'text' : 'password'}
                   minLength={8}
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   placeholder="8+ chars, 1 number"
-                  className="w-full pl-9 pr-3 py-2.5 bg-slate-100 rounded-xl text-sm"
+                  aria-invalid={form.password.length > 0 && !evaluatePasswordStrength(form.password).meetsRequirements}
+                  className="w-full pl-9 pr-9 py-2.5 bg-slate-100 rounded-xl text-sm"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPass(!showPass)}
+                  aria-label={showPass ? 'Hide password' : 'Show password'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
             <div>
               <label className="block font-semibold text-slate-600 mb-1">Confirm Password *</label>
               <input
                 required
-                type="password"
+                type={showPass ? 'text' : 'password'}
                 minLength={8}
                 value={form.confirm_password}
                 onChange={(e) => setForm({ ...form, confirm_password: e.target.value })}
                 placeholder="Confirm password"
+                aria-invalid={form.confirm_password.length > 0 && form.password !== form.confirm_password}
                 className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
               />
             </div>
           </div>
+
+          <PasswordStrengthMeter password={form.password} confirmPassword={form.confirm_password} compact />
 
           <button
             disabled={busy}

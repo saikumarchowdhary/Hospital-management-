@@ -18,6 +18,8 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { apiRequest, setAccessToken } from '../lib/api';
+import { PasswordStrengthMeter } from './PasswordStrengthMeter';
+import { evaluatePasswordStrength } from '../lib/passwordValidation';
 
 const CONSENT_VERSION = 'v2.0';
 const CONSENT_TEXT =
@@ -193,6 +195,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const submitSetup = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    const pwdEval = evaluatePasswordStrength(setupForm.password);
+    if (!pwdEval.meetsRequirements) {
+      setErrorMsg(pwdEval.error || 'Password must be at least 8 characters and include a number.');
+      return;
+    }
     if (setupForm.password !== setupForm.confirm) {
       setErrorMsg('Passwords do not match.');
       return;
@@ -426,6 +433,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const submitReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    const pwdEval = evaluatePasswordStrength(resetNewPass);
+    if (!pwdEval.meetsRequirements) {
+      setErrorMsg(pwdEval.error || 'Password must be at least 8 characters and include a number.');
+      return;
+    }
     try {
       const res = await apiRequest('/api/auth/reset-password', {
         method: 'POST',
@@ -592,6 +604,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   value={setupForm.password}
                   onChange={(e) => setSetupForm({ ...setupForm, password: e.target.value })}
                   placeholder="Password (8+ chars, 1 number)"
+                  aria-invalid={setupForm.password.length > 0 && !evaluatePasswordStrength(setupForm.password).meetsRequirements}
                   className="w-full pl-3.5 pr-9 py-2.5 bg-slate-100 rounded-xl text-sm"
                 />
                 <button type="button" onClick={() => setShowSetupPass(!showSetupPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
@@ -608,6 +621,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
               />
             </div>
+            <PasswordStrengthMeter password={setupForm.password} confirmPassword={setupForm.confirm} compact />
             <button disabled={busy} type="submit" className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl">
               Create Administrator Account
             </button>
@@ -868,12 +882,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={resetNewPass}
                     onChange={(e) => setResetNewPass(e.target.value)}
                     placeholder="New Password (8+ chars, 1 number)"
+                    aria-invalid={resetNewPass.length > 0 && !evaluatePasswordStrength(resetNewPass).meetsRequirements}
                     className="w-full pl-3.5 pr-10 py-2.5 bg-slate-100 rounded-xl text-sm"
                   />
                   <button type="button" onClick={() => setShowResetPass(!showResetPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
                     {showResetPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+                <PasswordStrengthMeter password={resetNewPass} compact />
                 <button type="submit" className="w-full py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-semibold">
                   Update Password
                 </button>
@@ -1110,9 +1126,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   value={reg.password}
                   onChange={(e) => setReg({ ...reg, password: e.target.value })}
                   placeholder="Password (8+ chars, 1 number)"
+                  aria-invalid={reg.password.length > 0 && !evaluatePasswordStrength(reg.password).meetsRequirements}
                   className="w-full pl-3.5 pr-9 py-2.5 bg-slate-100 rounded-xl text-sm"
                 />
-                <button type="button" onClick={() => setShowRegPass(!showRegPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                <button type="button" onClick={() => setShowRegPass(!showRegPass)} aria-label={showRegPass ? 'Hide password' : 'Show password'} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
                   {showRegPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
@@ -1123,9 +1140,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 value={reg.confirm}
                 onChange={(e) => setReg({ ...reg, confirm: e.target.value })}
                 placeholder="Confirm Password"
+                aria-invalid={reg.confirm.length > 0 && reg.password !== reg.confirm}
                 className="px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
               />
             </div>
+
+            <PasswordStrengthMeter password={reg.password} confirmPassword={reg.confirm} />
 
             {accountType === 'patient' && (
               <label className="flex items-start gap-2 text-[11px] text-slate-600 cursor-pointer">
