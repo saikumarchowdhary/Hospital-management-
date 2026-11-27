@@ -35,6 +35,15 @@ test('Clinical: doctor consult/Rx/lab, nurse vitals, role isolation, unreleased 
     });
     assert.equal(vitals.status, 201);
 
+    // Patient dashboard and doctor patient detail expose 30-day vitals history
+    const patDash = await pat.get('/api/patients/me/dashboard');
+    assert.equal(patDash.status, 200);
+    assert.ok(Array.isArray(patDash.data.vitals) && patDash.data.vitals.length >= 2);
+    const docPatDetail = await doc.get(`/api/patients/${patient.id}`);
+    assert.equal(docPatDetail.status, 200);
+    assert.ok(Array.isArray(docPatDetail.data.clinical?.vitals) && docPatDetail.data.clinical.vitals.length >= 2);
+    assert.ok(docPatDetail.data.clinical.vitals.some((v) => v.pulse === 72 && v.blood_pressure === '122/78'));
+
     // Doctor submits consultation + diagnosis + prescription + lab order (Lipid Profile)
     const testsRes = await doc.get('/api/laboratory/tests');
     const lipidTest = testsRes.data.tests.find((t) => t.code === 'LIPID');

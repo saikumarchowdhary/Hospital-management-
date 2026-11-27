@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errors.js';
 import { isStrongPassword } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
+import { getPhoneLookupCandidates, normalizePhone } from '../services/phone.js';
 
 export const SELF_REGISTER_STAFF_ROLES = [
   'nurse', 'receptionist', 'case_manager', 'lab_staff', 'pharmacist', 'radiologist',
@@ -38,13 +39,22 @@ function saveAttachmentRecord(db, file, ownerUserId, moduleName) {
   return { id: info.lastInsertRowid, url: `/api/admin/attachments/${info.lastInsertRowid}` };
 }
 
-export function registerStaffPendingTx(db, broker, body, ip, files = {}) {
+function findUserByPhone(db, rawPhone) {
+  const candidates = getPhoneLookupCandidates(rawPhone);
+  if (!candidates.length) return null;
+  const placeholders = candidates.map(() => '?').join(', ');
+  return db.get(
+    `SELECT id FROM users WHERE phone_normalized IN (${placeholders}) OR phone = ? LIMIT 1`,
+    [...candidates, String(rawPhone || '').trim()]
+  );
+}
+
+export function registerDoctorTx(db, broker, body, ip, files = {}) {
   const {
-    account_type = 'staff',
-    requested_role = '',
     full_name,
     email,
     mobile,
+    phone,
     password,
     branch_id = 1,
     department_id = null,
@@ -62,45 +72,193 @@ export function registerStaffPendingTx(db, broker, body, ip, files = {}) {
     photo_url = ''
   } = body;
 
-  const isDoctorSignup = account_type === 'doctor' || requested_role === 'doctor';
-  const targetReqRole = isDoctorSignup ? 'doctor' : requested_role;
+  const rawMobile = mobile ?? phone ?? '';
+  const normPhone = normalizePhone(rawMobile);
+  const safeRegNo = String(medical_registration_number || registration_number || '').trim();
+  const safeCouncil = String(medical_council || council || '').trim();
+  const safeEmpId = employee_id ? String(employee_id).trim() : '';
+
+  if (!full_name || String(full_name).trim().length < 2) throw new AppError(400, 'Full name is required.');
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) throw new AppError(400, 'Valid email is required.');
+  if (!normPhone || normPhone.replace(/\D/g, '').length < 6) throw new AppError(400, 'Valid phone number is required.');
+  if (!isStrongPassword(password)) throw new AppError(400, 'Password must be at least 8 characters and include a number.');
+  if (!safeRegNo) throw new AppError(400, 'Medical registration number is required.');
+  if (!safeCouncil) throw new AppError(400, 'Medical council name is required.');
+  if (!department_id) throw new AppError(400, 'Department selection is required.');
+
+  const safeEmail = String(email).trim().toLowerCase();
+  if (db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [safeEmail])) {
+    throw new AppError(409, 'An account with this email already exists.');
+  }
+  if (findUserByPhone(db, rawMobile)) {
+    throw new AppError(409, 'An account with this phone number already exists.');
+  }
+  if (safeEmpId) {
+    const dupEmp =
+      db.get('SELECT id FROM employee_profiles WHERE upper(employee_code) = upper(?)', [safeEmpId]) ||
+      db.get("SELECT id FROM staff_signup_requests WHERE upper(employee_id) = upper(?) AND status NOT IN ('Rejected','Withdrawn')", [safeEmpId]);
+    if (dupEmp) throw new AppError(409, 'This Employee ID is already registered.');
+  }
+  if (db.get('SELECT id FROM doctor_profiles WHERE upper(registration_number) = upper(?)', [safeRegNo])) {
+    throw new AppError(409, 'This medical registration number is already registered.');
+  }
+
+  const doctorRole = db.get("SELECT id, code, name FROM roles WHERE code = 'doctor'");
+  if (!doctorRole) throw new AppError(500, 'System doctor role configuration missing.');
+
+  const deptId = Number(department_id);
+  const dept = db.get('SELECT id, branch_id FROM departments WHERE id = ?', [deptId]);
+  if (!dept) throw new AppError(400, 'Selected department does not exist.');
+
+  const branchId = branch_id ? Number(branch_id) : (dept.branch_id || 1);
+  const specId =
+    (specialty_id && db.get('SELECT id FROM specialties WHERE id = ?', [Number(specialty_id)])?.id) ||
+    db.get('SELECT id FROM specialties WHERE department_id = ? ORDER BY id LIMIT 1', [deptId])?.id ||
+    db.get('SELECT id FROM specialties ORDER BY id LIMIT 1')?.id ||
+    1;
+
+  const userCode = uniqueCode('DOC');
+  const doctorCode = `DR-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
+  const empCode = safeEmpId || `EMP-${userCode}`;
+  const hash = bcrypt.hashSync(password, 10);
+
+  const result = db.transaction(() => {
+    const uInfo = db.run(
+      `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+      [userCode, safeEmail, hash, String(full_name).trim(), normPhone, normPhone, doctorRole.id, branchId, deptId]
+    );
+    const userId = uInfo.lastInsertRowid;
+
+    const licenceFile = files?.licence?.[0] || files?.document_file?.[0] || null;
+    const photoFile = files?.photo?.[0] || null;
+    const savedLicence = saveAttachmentRecord(db, licenceFile, userId, 'doctor_licence');
+    const savedPhoto = saveAttachmentRecord(db, photoFile, userId, 'profile_photo');
+
+    const finalLicenceUrl = savedLicence?.url || licence_url || document_url || null;
+    const finalPhotoUrl = savedPhoto?.url || photo_url || null;
+
+    db.run(
+      `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, qualification, photo_url, joining_date, employment_status, base_salary)
+       VALUES (?, ?, ?, ?, 'DOCTOR', ?, ?, date('now'), 'Active', 14000)`,
+      [userId, empCode, deptId, branchId, qualification ? String(qualification).trim() : null, finalPhotoUrl]
+    );
+
+    const dpInfo = db.run(
+      `INSERT INTO doctor_profiles (
+         user_id, doctor_code, specialty_id, department_id, branch_id, qualification,
+         experience_years, consultation_fee, bio, availability_status, is_active,
+         registration_number, medical_council, licence_url, photo_url, licence_attachment_id, photo_attachment_id,
+         working_days, slot_minutes, schedule_configured
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Available', 1, ?, ?, ?, ?, ?, ?, '', 30, 0)`,
+      [
+        userId,
+        doctorCode,
+        specId,
+        deptId,
+        branchId,
+        qualification ? String(qualification).trim() : 'MBBS, MD',
+        Number(experience_years || 1),
+        Number(consultation_fee || 100),
+        'Board-certified specialist at MediCore HMS.',
+        safeRegNo,
+        safeCouncil,
+        finalLicenceUrl,
+        finalPhotoUrl,
+        savedLicence?.id || null,
+        savedPhoto?.id || null
+      ]
+    );
+
+    logAudit(db, {
+      actorUserId: userId,
+      actorRole: 'doctor',
+      action: 'auth.doctor_registered',
+      entityType: 'user',
+      entityId: userId,
+      details: JSON.stringify({
+        role: 'doctor',
+        branch_id: branchId,
+        department_id: deptId,
+        medical_registration_number: safeRegNo,
+        medical_council: safeCouncil,
+        licence_attachment_id: savedLicence?.id || null
+      }),
+      ip
+    });
+
+    return {
+      userId,
+      doctorProfileId: dpInfo.lastInsertRowid,
+      licenceAttachmentId: savedLicence?.id || null,
+      finalLicenceUrl
+    };
+  })();
+
+  createNotification(db, broker, {
+    roles: ['admin'],
+    title: 'New Doctor Registered',
+    message: `${String(full_name).trim()} (${userCode}) joined MediCore HMS.`,
+    eventType: 'member:registered'
+  });
+
+  return {
+    id: result.userId,
+    user_code: userCode,
+    doctor_profile_id: result.doctorProfileId,
+    licence_attachment_id: result.licenceAttachmentId,
+    licence_url: result.finalLicenceUrl
+  };
+}
+
+export function registerStaffPendingTx(db, broker, body, ip, files = {}) {
+  const {
+    account_type = 'staff',
+    requested_role = '',
+    full_name,
+    email,
+    mobile,
+    phone,
+    password,
+    branch_id = 1,
+    department_id = null,
+    specialty_id = null,
+    employee_id = '',
+    qualification = '',
+    document_url = '',
+    licence_url = '',
+    photo_url = ''
+  } = body;
+
+  const rawMobile = mobile ?? phone ?? '';
+  const normPhone = normalizePhone(rawMobile);
+  const targetReqRole = requested_role;
 
   if (targetReqRole === 'admin' || account_type === 'admin') {
     throw new AppError(403, 'Administrator accounts cannot be created via public sign-up. Please contact hospital administration.');
   }
-  if (!isDoctorSignup && !SELF_REGISTER_STAFF_ROLES.includes(targetReqRole)) {
+  if (!SELF_REGISTER_STAFF_ROLES.includes(targetReqRole)) {
     throw new AppError(400, 'Please select a valid hospital staff role.');
   }
   if (!full_name || String(full_name).trim().length < 2) throw new AppError(400, 'Full name is required.');
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AppError(400, 'Valid email is required.');
-  if (!mobile || String(mobile).trim().length < 6) throw new AppError(400, 'Valid mobile number is required.');
+  if (!normPhone || normPhone.replace(/\D/g, '').length < 6) throw new AppError(400, 'Valid mobile number is required.');
   if (!isStrongPassword(password)) throw new AppError(400, 'Password must be at least 8 characters and include a number.');
 
   const safeEmail = String(email).trim().toLowerCase();
-  const safeMobile = String(mobile).trim();
   const safeEmpId = employee_id ? String(employee_id).trim() : '';
-  const safeRegNo = String(medical_registration_number || registration_number || '').trim();
-  const safeCouncil = String(medical_council || council || '').trim();
 
-  if (isDoctorSignup) {
-    if (!safeRegNo) throw new AppError(400, 'Medical registration number is required for doctor verification.');
-    if (!safeCouncil) throw new AppError(400, 'Medical council name is required for doctor verification.');
-    if (!department_id) throw new AppError(400, 'Department selection is required for doctor registration.');
+  if (db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [safeEmail])) {
+    throw new AppError(409, 'An account with this email already exists.');
   }
-
-  const dupUser = db.get('SELECT id FROM users WHERE lower(email) = lower(?) OR phone = ?', [safeEmail, safeMobile]);
-  if (dupUser) throw new AppError(409, 'An account with this email or mobile number already exists.');
+  if (findUserByPhone(db, rawMobile)) {
+    throw new AppError(409, 'An account with this phone number already exists.');
+  }
 
   if (safeEmpId) {
     const dupEmp = db.get('SELECT id FROM employee_profiles WHERE upper(employee_code) = upper(?)', [safeEmpId]) ||
       db.get("SELECT id FROM staff_signup_requests WHERE upper(employee_id) = upper(?) AND status NOT IN ('Rejected','Withdrawn')", [safeEmpId]);
     if (dupEmp) throw new AppError(409, 'This Employee ID is already registered or pending review.');
-  }
-
-  if (safeRegNo) {
-    const dupReg = db.get('SELECT id FROM doctor_profiles WHERE upper(registration_number) = upper(?)', [safeRegNo]) ||
-      db.get("SELECT id FROM staff_signup_requests WHERE upper(medical_registration_number) = upper(?) AND status NOT IN ('Rejected','Withdrawn')", [safeRegNo]);
-    if (dupReg) throw new AppError(409, 'This medical registration number is already registered or pending verification.');
   }
 
   const pendingRole = db.get("SELECT id, code, name FROM roles WHERE code = 'pending_staff'");
@@ -109,24 +267,24 @@ export function registerStaffPendingTx(db, broker, body, ip, files = {}) {
   const requestedRoleRow = db.get('SELECT id, code, name FROM roles WHERE code = ?', [targetReqRole]);
   const roleName = requestedRoleRow ? requestedRoleRow.name : targetReqRole;
 
-  const userCode = uniqueCode(isDoctorSignup ? 'DOCREQ' : 'STF');
+  const userCode = uniqueCode('STF');
   const hash = bcrypt.hashSync(password, 10);
   const deptId = department_id ? Number(department_id) : null;
   const branchId = branch_id ? Number(branch_id) : 1;
   const specId = specialty_id ? Number(specialty_id) : null;
-  const accountStatus = isDoctorSignup ? 'Pending Verification' : 'Pending Approval';
+  const accountStatus = 'Pending Approval';
 
   const result = db.transaction(() => {
     const uInfo = db.run(
-      `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-      [userCode, safeEmail, hash, String(full_name).trim(), safeMobile, pendingRole.id, branchId, deptId, accountStatus]
+      `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      [userCode, safeEmail, hash, String(full_name).trim(), normPhone, normPhone, pendingRole.id, branchId, deptId, accountStatus]
     );
     const userId = uInfo.lastInsertRowid;
 
     const licenceFile = files?.licence?.[0] || files?.document_file?.[0] || null;
     const photoFile = files?.photo?.[0] || null;
-    const savedLicence = saveAttachmentRecord(db, licenceFile, userId, isDoctorSignup ? 'doctor_licence' : 'staff_credential');
+    const savedLicence = saveAttachmentRecord(db, licenceFile, userId, 'staff_credential');
     const savedPhoto = saveAttachmentRecord(db, photoFile, userId, 'profile_photo');
 
     const finalLicenceUrl = savedLicence?.url || licence_url || document_url || null;
@@ -136,26 +294,22 @@ export function registerStaffPendingTx(db, broker, body, ip, files = {}) {
       `INSERT INTO staff_signup_requests (
          user_id, full_name, email, phone, requested_role, branch_id, department_id,
          employee_id, qualification, document_url,
-         medical_registration_number, medical_council, specialty_id, experience_years, consultation_fee,
-         licence_url, photo_url, licence_attachment_id, photo_attachment_id, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')`,
+         specialty_id, licence_url, photo_url, licence_attachment_id, photo_attachment_id, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')`,
       [
-        userId, String(full_name).trim(), safeEmail, safeMobile, targetReqRole, branchId, deptId,
+        userId, String(full_name).trim(), safeEmail, normPhone, targetReqRole, branchId, deptId,
         safeEmpId || null, qualification ? String(qualification).trim() : null, finalLicenceUrl,
-        safeRegNo || null, safeCouncil || null, specId,
-        isDoctorSignup ? Number(experience_years || 1) : null,
-        isDoctorSignup ? Number(consultation_fee || 100) : null,
-        finalLicenceUrl, finalPhotoUrl, savedLicence?.id || null, savedPhoto?.id || null
+        specId, finalLicenceUrl, finalPhotoUrl, savedLicence?.id || null, savedPhoto?.id || null
       ]
     );
 
     logAudit(db, {
       actorUserId: userId,
       actorRole: 'pending_staff',
-      action: isDoctorSignup ? 'auth.doctor_verification_requested' : 'auth.staff_signup_requested',
+      action: 'auth.staff_signup_requested',
       entityType: 'user',
       entityId: userId,
-      details: JSON.stringify({ requested_role: targetReqRole, branch_id: branchId, department_id: deptId, medical_registration_number: safeRegNo || undefined }),
+      details: JSON.stringify({ requested_role: targetReqRole, branch_id: branchId, department_id: deptId }),
       ip
     });
 
@@ -164,10 +318,8 @@ export function registerStaffPendingTx(db, broker, body, ip, files = {}) {
 
   createNotification(db, broker, {
     roles: ['admin'],
-    title: isDoctorSignup ? 'Doctor Verification Request' : 'New Staff Signup Request',
-    message: isDoctorSignup
-      ? `${full_name} submitted medical credentials (${safeRegNo}) for Doctor verification.`
-      : `${full_name} submitted a signup request for role ${roleName} (${userCode}).`,
+    title: 'New Staff Signup Request',
+    message: `${full_name} submitted a signup request for role ${roleName} (${userCode}).`,
     eventType: 'member:registered'
   });
 

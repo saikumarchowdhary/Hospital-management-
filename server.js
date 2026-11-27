@@ -203,7 +203,7 @@ export function createHmsApp(options = {}) {
   app.use('/api/clinical', createClinicalRouter(db, broker, authenticate));
   app.use('/api/nursing', createNursingRouter(db, broker, authenticate));
   app.use('/api/admissions', createAdmissionsRouter(db, broker, authenticate));
-  app.use('/api/beds', createBedsRouter(db, authenticate));
+  app.use('/api/beds', createBedsRouter(db, authenticate, broker));
   app.use('/api/laboratory', createLaboratoryRouter(db, broker, authenticate, upload));
   app.use('/api/radiology', createRadiologyRouter(db, broker, authenticate, upload));
   app.use('/api/pharmacy', createPharmacyRouter(db, broker, authenticate));

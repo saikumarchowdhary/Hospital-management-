@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { initSchemaPart1 } from './schema.js';
 import { initSchemaPart1b } from './schema_part1b.js';
 import { initSchemaPart2 } from './schema_part2.js';
@@ -5,6 +6,114 @@ import { initSchemaPart3 } from './schema_part3.js';
 import { initSchemaPart3b } from './schema_part3b.js';
 import { initSchemaPart4 } from './schema_part4.js';
 import { initSchemaPart4b } from './schema_part4b.js';
+import { normalizePhone } from '../services/phone.js';
+
+export function syncUsersPhoneNormalized(db) {
+  const users = db.all('SELECT id, user_code, phone, phone_normalized FROM users ORDER BY id ASC');
+  const seen = new Set();
+  for (const u of users) {
+    let norm = normalizePhone(u.phone);
+    if (!norm) continue;
+    if (seen.has(norm)) {
+      const altPhone = `+1-555-9${String(u.id).padStart(3, '0')}`;
+      const altNorm = normalizePhone(altPhone);
+      db.run('UPDATE users SET phone = ?, phone_normalized = ? WHERE id = ?', [altPhone, altNorm, u.id]);
+      seen.add(altNorm);
+    } else {
+      seen.add(norm);
+      if (u.phone_normalized !== norm) {
+        db.run('UPDATE users SET phone_normalized = ? WHERE id = ?', [norm, u.id]);
+      }
+    }
+  }
+}
+
+export function activatePendingDoctorAccounts(db) {
+  const doctorRole = db.get("SELECT id FROM roles WHERE code = 'doctor'");
+  if (!doctorRole) return;
+
+  db.run(
+    `UPDATE users
+     SET is_active = 1, account_status = 'Active', updated_at = datetime('now')
+     WHERE role_id = ? AND account_status IN ('Pending Verification', 'Pending Approval', 'Pending', 'pending', 'unverified', 'Unverified', 'awaiting_approval', 'Awaiting Approval')`,
+    [doctorRole.id]
+  );
+
+  const pendingDocRequests = db.all(
+    `SELECT sr.*, u.user_code, u.branch_id as user_branch_id, u.department_id as user_dept_id
+     FROM staff_signup_requests sr
+     JOIN users u ON u.id = sr.user_id
+     WHERE sr.requested_role = 'doctor'
+       AND (
+         sr.status IN ('Pending', 'Info Requested')
+         OR u.account_status IN ('Pending Verification', 'Pending Approval', 'Pending', 'pending', 'unverified', 'Unverified', 'awaiting_approval', 'Awaiting Approval')
+         OR u.role_id = (SELECT id FROM roles WHERE code = 'pending_staff')
+       )`
+  );
+
+  for (const req of pendingDocRequests) {
+    const uid = req.user_id;
+    const targetDeptId = req.department_id || req.user_dept_id || db.get('SELECT id FROM departments ORDER BY id LIMIT 1')?.id || 1;
+    const targetBranchId = req.branch_id || req.user_branch_id || db.get('SELECT id FROM branches ORDER BY id LIMIT 1')?.id || 1;
+    const targetSpecId =
+      req.specialty_id ||
+      db.get('SELECT id FROM specialties WHERE department_id = ? ORDER BY id LIMIT 1', [targetDeptId])?.id ||
+      db.get('SELECT id FROM specialties ORDER BY id LIMIT 1')?.id ||
+      1;
+
+    db.transaction(() => {
+      db.run(
+        `UPDATE users
+         SET role_id = ?, branch_id = ?, department_id = ?, is_active = 1, account_status = 'Active', updated_at = datetime('now')
+         WHERE id = ?`,
+        [doctorRole.id, targetBranchId, targetDeptId, uid]
+      );
+
+      if (!db.get('SELECT id FROM employee_profiles WHERE user_id = ?', [uid])) {
+        db.run(
+          `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, qualification, photo_url, joining_date, employment_status, base_salary)
+           VALUES (?, ?, ?, ?, 'DOCTOR', ?, ?, date('now'), 'Active', 14000)`,
+          [uid, req.employee_id || `EMP-${req.user_code}`, targetDeptId, targetBranchId, req.qualification || null, req.photo_url || null]
+        );
+      }
+
+      if (!db.get('SELECT id FROM doctor_profiles WHERE user_id = ?', [uid])) {
+        db.run(
+          `INSERT INTO doctor_profiles (
+             user_id, doctor_code, specialty_id, department_id, branch_id, qualification,
+             experience_years, consultation_fee, bio, availability_status, is_active,
+             registration_number, medical_council, licence_url, photo_url, licence_attachment_id, photo_attachment_id,
+             working_days, slot_minutes, schedule_configured
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Available', 1, ?, ?, ?, ?, ?, ?, '', 30, 0)`,
+          [
+            uid,
+            `DR-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`,
+            targetSpecId,
+            targetDeptId,
+            targetBranchId,
+            req.qualification || 'MD',
+            Number(req.experience_years || 5),
+            Number(req.consultation_fee || 100),
+            'Board-certified specialist at MediCore HMS.',
+            req.medical_registration_number || `REG-MED-${crypto.randomInt(10000, 99999)}`,
+            req.medical_council || null,
+            req.licence_url || req.document_url || null,
+            req.photo_url || null,
+            req.licence_attachment_id || null,
+            req.photo_attachment_id || null
+          ]
+        );
+      }
+
+      db.run(
+        `UPDATE staff_signup_requests
+         SET status = 'Approved', reviewed_at = COALESCE(reviewed_at, datetime('now')), updated_at = datetime('now')
+         WHERE id = ?`,
+        [req.id]
+      );
+    })();
+  }
+}
 
 export function runMigrations(db) {
   initSchemaPart1(db);
@@ -43,6 +152,8 @@ export function runMigrations(db) {
   ensureCol('doctor_profiles', 'registration_number', 'TEXT');
   ensureCol('doctor_profiles', 'medical_council', 'TEXT');
   ensureCol('doctor_profiles', 'licence_url', 'TEXT');
+  ensureCol('doctor_profiles', 'licence_attachment_id', 'INTEGER');
+  ensureCol('doctor_profiles', 'photo_attachment_id', 'INTEGER');
   ensureCol('doctor_profiles', 'working_days', "TEXT DEFAULT 'Mon,Tue,Wed,Thu,Fri'");
   ensureCol('doctor_profiles', 'slot_minutes', 'INTEGER DEFAULT 30');
   ensureCol('doctor_profiles', 'schedule_configured', 'INTEGER NOT NULL DEFAULT 0');
@@ -53,6 +164,7 @@ export function runMigrations(db) {
   ensureCol('appointments', 'checked_out_at', 'TEXT');
   ensureCol('housekeeping_tasks', 'task_type', "TEXT NOT NULL DEFAULT 'Cleaning'");
   ensureCol('users', 'account_status', "TEXT NOT NULL DEFAULT 'Active'");
+  ensureCol('users', 'phone_normalized', 'TEXT');
   ensureCol('users', 'reviewed_by', 'INTEGER');
   ensureCol('users', 'reviewed_at', 'TEXT');
   ensureCol('users', 'review_notes', 'TEXT');
@@ -159,15 +271,17 @@ export function runMigrations(db) {
     INSERT OR IGNORE INTO roles (code, name, description, is_staff)
     VALUES ('housekeeping_supervisor', 'Housekeeping Supervisor', 'Supervises room cleaning, sanitization, and inspections', 1);
 
-    CREATE TRIGGER IF NOT EXISTS trg_prevent_direct_doctor_admin_signup
+    DROP TRIGGER IF EXISTS trg_prevent_direct_doctor_admin_signup;
+
+    CREATE TRIGGER IF NOT EXISTS trg_prevent_pending_admin_signup
     BEFORE INSERT ON users
     FOR EACH ROW
     WHEN (
-      NEW.role_id IN (SELECT id FROM roles WHERE code IN ('doctor', 'admin'))
+      NEW.role_id IN (SELECT id FROM roles WHERE code = 'admin')
       AND NEW.account_status IN ('Pending Approval', 'Pending Verification')
     )
     BEGIN
-      SELECT RAISE(ABORT, 'Direct public sign-up for doctor and admin roles is prohibited.');
+      SELECT RAISE(ABORT, 'Direct public sign-up for admin role is prohibited.');
     END;
 
     UPDATE users SET account_status = CASE WHEN is_active = 1 THEN 'Active' ELSE 'Suspended' END WHERE account_status IS NULL OR account_status = '';
@@ -361,5 +475,40 @@ export function runMigrations(db) {
       );
     }
   }
+  activatePendingDoctorAccounts(db);
+  syncUsersPhoneNormalized(db);
+  seedRoleAccessPasscodes(db);
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_normalized ON users(phone_normalized) WHERE phone_normalized IS NOT NULL AND phone_normalized != '';
+  `);
 }
 
+function seedRoleAccessPasscodes(db) {
+  const presets = [
+    {
+      label: 'Admin Role Passcode',
+      targetRole: 'admin',
+      hash: '$2b$10$MIUQqLxkmrCn.l7nMTJ3ouS9EYahq8kM7q8m.emPhoVhc3R8UKROq',
+    },
+    {
+      label: 'Department Admin Role Passcode',
+      targetRole: 'department_admin',
+      hash: '$2b$10$iJKPLb/rz6T6DMysZDqZQujj9KibiaXLQk7l1ZPEu5uf51QMEjyCa',
+    },
+  ];
+  for (const preset of presets) {
+    const existing = db.get(
+      'SELECT id FROM admin_verification_codes WHERE code_label = ? AND target_role = ?',
+      [preset.label, preset.targetRole]
+    );
+    if (!existing) {
+      db.run(
+        `INSERT INTO admin_verification_codes (code_label, code_hash, target_role, department_id, is_demo, is_active)
+         VALUES (?, ?, ?, NULL, 0, 1)`,
+        [preset.label, preset.hash, preset.targetRole]
+      );
+    }
+  }
+}

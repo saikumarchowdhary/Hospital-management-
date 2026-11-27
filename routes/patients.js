@@ -6,6 +6,7 @@ import { canAccessClinicalRecord, requirePermission } from '../middleware/roles.
 import { validateRequest } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
+import { getPhoneLookupCandidates, normalizePhone } from '../services/phone.js';
 
 export function createPatientsRouter(db, broker, authenticate, upload) {
   const router = express.Router();
@@ -68,6 +69,14 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
        ORDER BY id DESC LIMIT 3`
     );
     const emergencies = db.all('SELECT * FROM emergency_requests WHERE patient_id = ? ORDER BY id DESC LIMIT 3', [pid]);
+    const vitals = db.all(
+      `SELECT pv.*, u.full_name as recorded_by_name
+       FROM patient_vitals pv
+       LEFT JOIN users u ON u.id = pv.recorded_by
+       WHERE pv.patient_id = ? AND datetime(pv.created_at) >= datetime('now', '-30 days')
+       ORDER BY pv.created_at ASC, pv.id ASC`,
+      [pid]
+    );
 
     res.json({
       profile,
@@ -83,7 +92,8 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
       followUps,
       announcements,
       campaigns,
-      emergencies
+      emergencies,
+      vitals
     });
   }));
 
@@ -186,10 +196,13 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
     validateRequest,
     asyncHandler(async (req, res) => {
       const { full_name, email, phone, dob, gender, blood_group, address, national_id } = req.body;
+      const normPhone = normalizePhone(phone);
+      const phoneCandidates = getPhoneLookupCandidates(phone);
+      const phoneClause = phoneCandidates.length > 0 ? `OR u.phone_normalized IN (${phoneCandidates.map(() => '?').join(', ')})` : '';
       const dup = db.get(
         `SELECT u.id FROM users u LEFT JOIN patient_profiles p ON p.user_id = u.id
-         WHERE lower(u.email) = lower(?) OR u.phone = ? OR (? IS NOT NULL AND p.national_id = ?)`,
-        [email, phone, national_id || null, national_id || null]
+         WHERE lower(u.email) = lower(?) OR u.phone = ? ${phoneClause} OR (? IS NOT NULL AND p.national_id = ?)`,
+        [email, phone, ...phoneCandidates, national_id || null, national_id || null]
       );
       if (dup) throw new AppError(409, 'Duplicate patient detected by email, phone, or national ID.');
 
@@ -200,8 +213,8 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
 
       const patId = db.transaction(() => {
         const uInfo = db.run(
-          'INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [uCode, email, tempPass, full_name, phone, patRole.id, req.user.branch_id || 1]
+          'INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [uCode, email, tempPass, full_name, normPhone || phone, normPhone || null, patRole.id, req.user.branch_id || 1]
         );
         const pInfo = db.run(
           `INSERT INTO patient_profiles (user_id, patient_code, dob, gender, blood_group, address, national_id, profile_completion)
@@ -260,7 +273,15 @@ export function createPatientsRouter(db, broker, authenticate, upload) {
     const canClinical = canAccessClinicalRecord(db, req.user, pid);
     const clinical = canClinical
       ? {
-          vitals: db.all('SELECT * FROM patient_vitals WHERE patient_id = ? ORDER BY created_at DESC LIMIT 10', [pid]),
+          vitals: db.all(
+            `SELECT pv.*, u.full_name as recorded_by_name
+             FROM patient_vitals pv
+             LEFT JOIN users u ON u.id = pv.recorded_by
+             WHERE pv.patient_id = ?
+             ORDER BY pv.created_at DESC, pv.id DESC
+             LIMIT 60`,
+            [pid]
+          ),
           allergies: db.all('SELECT * FROM allergies WHERE patient_id = ?', [pid]),
           history: db.all('SELECT * FROM medical_history WHERE patient_id = ?', [pid]),
           diagnoses: db.all('SELECT * FROM diagnoses WHERE patient_id = ? ORDER BY created_at DESC', [pid]),

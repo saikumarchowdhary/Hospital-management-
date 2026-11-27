@@ -71,7 +71,7 @@ export function createClinicalRouter(db, broker, authenticate) {
     );
     const vitals = db.all(
       `SELECT pv.*, u.full_name as recorded_by_name FROM patient_vitals pv
-       JOIN users u ON u.id = pv.recorded_by WHERE pv.patient_id = ? ORDER BY pv.created_at DESC LIMIT 20`,
+       LEFT JOIN users u ON u.id = pv.recorded_by WHERE pv.patient_id = ? ORDER BY pv.created_at DESC, pv.id DESC LIMIT 60`,
       [pid]
     );
     const allergies = db.all('SELECT * FROM allergies WHERE patient_id = ?', [pid]);

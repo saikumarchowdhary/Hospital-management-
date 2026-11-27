@@ -369,3 +369,47 @@ export async function downloadPaymentReceiptPdf(
   const fileName = `Receipt_${sanitizeFilenamePart(bill.receipt_number || bill.payment_ref)}_${sanitizeFilenamePart(bill.patient_name)}.pdf`;
   doc.save(fileName);
 }
+
+export async function downloadPatientRegistryPdf(patients: any[], userRole: string, hospitalName = 'CareLine HMS') {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const dateStr = new Date().toISOString().slice(0, 10);
+
+  // Header band
+  doc.setFillColor(30, 94, 255);
+  doc.rect(0, 0, 210, 28, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text(`${hospitalName} — Patient Registry Summary`, 14, 12);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text(`Generated: ${dateStr}  |  Role Clearance: ${userRole.toUpperCase()}  |  Secure & Role-Restricted`, 14, 20);
+
+  const rows = (patients || []).map((p, idx) => [
+    String(idx + 1),
+    p.patient_code || `PT-${p.id}`,
+    p.full_name || 'Patient',
+    `${p.gender || 'N/A'} (DOB: ${p.dob || 'N/A'})`,
+    p.blood_group || 'N/A',
+    p.phone || p.email || 'N/A',
+    p.address || '—'
+  ]);
+
+  autoTable(doc, {
+    startY: 34,
+    head: [['#', 'MRN / Code', 'Full Name', 'Demographics', 'Blood Group', 'Contact', 'Address']],
+    body: rows.length > 0 ? rows : [['1', 'N/A', 'No patients found', '—', '—', '—', '—']],
+    theme: 'grid',
+    margin: { left: 14, right: 14 },
+    headStyles: { fillColor: [30, 94, 255], textColor: [255, 255, 255], fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [30, 41, 59] },
+    alternateRowStyles: { fillColor: [248, 250, 252] }
+  });
+
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Confidential Electronic Health Record Summary — Authorized Hospital Personnel Only.', 105, 285, { align: 'center' });
+
+  doc.save(`Patient_Registry_Summary_${dateStr}.pdf`);
+}
+

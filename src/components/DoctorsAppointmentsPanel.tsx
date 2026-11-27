@@ -121,7 +121,7 @@ export const DoctorsAppointmentsPanel: React.FC<Props> = ({ mode, searchQuery, u
             Connected to SQLite schedules, slot reservation locks, and real-time check-in/consultation transitions.
           </p>
         </div>
-        {['admin', 'receptionist', 'doctor', 'patient'].includes(userRole) && (
+        {mode === 'appointments' && ['admin', 'receptionist', 'patient'].includes(userRole) && (
           <button
             onClick={() => {
               if (!booking.doctor_id && doctors[0]) {
@@ -161,15 +161,17 @@ export const DoctorsAppointmentsPanel: React.FC<Props> = ({ mode, searchQuery, u
                 </div>
                 <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
                   <span className="text-sm font-bold text-slate-900">${doc.consultation_fee} Fee</span>
-                  <button
-                    onClick={() => {
-                      setBooking((b) => ({ ...b, doctor_id: String(doc.id), patient_id: patients[0] ? String(patients[0].id) : '' }));
-                      setShowBookModal(true);
-                    }}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg"
-                  >
-                    Check Slots
-                  </button>
+                  {userRole !== 'doctor' && (
+                    <button
+                      onClick={() => {
+                        setBooking((b) => ({ ...b, doctor_id: String(doc.id), patient_id: patients[0] ? String(patients[0].id) : '' }));
+                        setShowBookModal(true);
+                      }}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg"
+                    >
+                      Check Slots
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

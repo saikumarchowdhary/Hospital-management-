@@ -4,6 +4,7 @@ import { AppError, asyncHandler } from '../middleware/errors.js';
 import { isStrongPassword } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
+import { getPhoneLookupCandidates, normalizePhone } from '../services/phone.js';
 import { approveSignupRequestTx, rejectSignupRequestTx } from './registration_helpers.js';
 
 export function registerAdminSignupsRoutes(router, db, broker) {
@@ -106,6 +107,14 @@ export function registerAdminSignupsRoutes(router, db, broker) {
 
     const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [email]);
     if (dup) throw new AppError(409, 'Email is already registered.');
+    const normPhone = normalizePhone(phone);
+    if (normPhone) {
+      const cands = getPhoneLookupCandidates(phone);
+      const ph = cands.map(() => '?').join(', ');
+      if (db.get(`SELECT id FROM users WHERE phone_normalized IN (${ph})`, cands)) {
+        throw new AppError(409, 'Phone number is already registered.');
+      }
+    }
     const dupReg = db.get('SELECT id FROM doctor_profiles WHERE upper(registration_number) = upper(?)', [String(registration_number).trim()]);
     if (dupReg) throw new AppError(409, 'Medical registration number is already assigned.');
 
@@ -121,9 +130,9 @@ export function registerAdminSignupsRoutes(router, db, broker) {
 
     const uid = db.transaction(() => {
       const uInfo = db.run(
-        `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
-        [uCode, email.trim().toLowerCase(), hash, name.trim(), phone, doctorRole.id, branchIdNum, deptIdNum]
+        `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+        [uCode, email.trim().toLowerCase(), hash, name.trim(), normPhone || phone, normPhone || null, doctorRole.id, branchIdNum, deptIdNum]
       );
       const userId = uInfo.lastInsertRowid;
 

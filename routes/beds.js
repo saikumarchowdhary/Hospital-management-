@@ -2,7 +2,7 @@ import express from 'express';
 import { AppError, asyncHandler } from '../middleware/errors.js';
 import { requirePermission } from '../middleware/roles.js';
 
-export function createBedsRouter(db, authenticate) {
+export function createBedsRouter(db, authenticate, broker = null) {
   const router = express.Router();
   router.use(authenticate);
 
@@ -41,8 +41,37 @@ export function createBedsRouter(db, authenticate) {
       }
     }
 
+    const previousStatus = bed.status;
     db.run('UPDATE beds SET status = ?, updated_at = datetime(\'now\') WHERE id = ?', [status, bedId]);
-    res.json({ bed: db.get('SELECT * FROM beds WHERE id = ?', [bedId]) });
+    const updatedBed = db.get(
+      `SELECT b.*, r.room_number, w.name as ward_name
+       FROM beds b
+       JOIN rooms r ON r.id = b.room_id
+       JOIN wards w ON w.id = r.ward_id
+       WHERE b.id = ?`,
+      [bedId]
+    );
+
+    if (broker && previousStatus !== status) {
+      broker.publish(
+        status === 'Available' ? 'bed:released' : 'bed:status_changed',
+        {
+          bedId,
+          bedCode: updatedBed?.bed_code || bed.bed_code,
+          wardName: updatedBed?.ward_name || '',
+          roomNumber: updatedBed?.room_number || '',
+          previousStatus,
+          status,
+          title: status === 'Available' ? 'Bed Now Available' : 'Bed Status Updated',
+          message: `Bed ${updatedBed?.bed_code || bed.bed_code} transitioned from ${previousStatus} to ${status}.`
+        },
+        {
+          roles: ['admin', 'department_admin', 'doctor', 'nurse', 'receptionist', 'case_manager', 'housekeeping', 'housekeeping_supervisor']
+        }
+      );
+    }
+
+    res.json({ bed: updatedBed });
   }));
 
   return router;

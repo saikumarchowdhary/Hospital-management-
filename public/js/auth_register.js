@@ -219,7 +219,14 @@ export function bindUnifiedRegisterEvents(root, { onAccountTypeChange }) {
       }
 
       if (!(res.token || res.accessToken)) {
-        throw new Error('Registration succeeded but no access token was returned by server.');
+        okBanner.innerHTML = `
+          <strong>Registration Successful!</strong><br />
+          ${esc(res.message || 'Account created successfully. Please verify your email / wait for approval, then sign in.')}
+        `;
+        okBanner.style.display = 'block';
+        form.reset();
+        toast('Success', res.message || 'Account created successfully. Please sign in.', 'success');
+        return;
       }
       clearFirstFailedRequestError();
       toast('Welcome to MediCore HMS', `Account ${res.user.user_code} created.`, 'success');

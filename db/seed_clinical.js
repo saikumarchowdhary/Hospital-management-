@@ -29,10 +29,11 @@ export function seedClinicalData(db, roleMap, deptMap) {
   );
 
   for (const d of extraDocs) {
+    const docPhone = `+1-555-${d.code.replace('DOC-', '')}`;
     db.run(
       `INSERT OR IGNORE INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id)
-       VALUES (?, ?, ?, ?, '+1-555-0299', ?, ?, ?)`,
-      [d.code, d.email, defaultDocPass, d.name, roleMap['doctor'], branchMap[d.branch], deptMap[d.dept]]
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [d.code, d.email, defaultDocPass, d.name, docPhone, roleMap['doctor'], branchMap[d.branch], deptMap[d.dept]]
     );
     const u = db.get('SELECT id FROM users WHERE email = ?', [d.email]);
     db.run(
@@ -88,11 +89,39 @@ export function seedClinicalData(db, roleMap, deptMap) {
   db.run('INSERT INTO patient_consents (patient_id, consent_type, accepted) VALUES (?, ?, 1)', [pat1.id, 'General Care & Portal Terms']);
   db.run('INSERT INTO allergies (patient_id, allergen, reaction, severity, recorded_by) VALUES (?, ?, ?, ?, ?)', [pat1.id, 'Penicillin', 'Mild skin rash', 'Moderate', docUser.id]);
   db.run('INSERT INTO medical_history (patient_id, condition_name, diagnosed_year, status, notes, recorded_by) VALUES (?, ?, ?, ?, ?, ?)', [pat1.id, 'Mild Hypertension', '2023', 'Managed', 'Controlled with lifestyle and low-dose therapy (Sample Demo Record)', docUser.id]);
-  db.run(
-    `INSERT INTO patient_vitals (patient_id, encounter_type, blood_pressure, pulse, temperature, respiratory_rate, oxygen_saturation, height_cm, weight_kg, recorded_by)
-     VALUES (?, 'OPD', '122/78', 74, 36.7, 16, 99, 166, 63, ?)`,
-    [pat1.id, nurseUser.id]
-  );
+  const pat1VitalsSeries = [
+    [-28, '138/88', 86, 37.3, 19, 96, 65.2],
+    [-24, '135/86', 84, 37.1, 18, 97, 64.9],
+    [-20, '132/84', 81, 37.0, 18, 97, 64.5],
+    [-16, '129/82', 79, 36.9, 17, 98, 64.1],
+    [-12, '126/80', 77, 36.8, 17, 98, 63.8],
+    [-8,  '124/79', 76, 36.8, 16, 98, 63.4],
+    [-4,  '123/78', 75, 36.7, 16, 99, 63.1],
+    [0,   '122/78', 74, 36.7, 16, 99, 63.0]
+  ];
+  for (const [offsetDays, bp, pulse, temp, rr, spo2, weight] of pat1VitalsSeries) {
+    db.run(
+      `INSERT INTO patient_vitals (patient_id, encounter_type, blood_pressure, pulse, temperature, respiratory_rate, oxygen_saturation, height_cm, weight_kg, recorded_by, created_at)
+       VALUES (?, 'OPD', ?, ?, ?, ?, ?, 166, ?, ?, datetime('now', ?))`,
+      [pat1.id, bp, pulse, temp, rr, spo2, weight, nurseUser.id, `${offsetDays} days`]
+    );
+  }
+
+  const pat2VitalsSeries = [
+    [-14, '146/92', 94, 37.6, 21, 94, 78.5],
+    [-10, '140/88', 89, 37.3, 20, 95, 78.2],
+    [-7,  '134/84', 84, 37.1, 18, 96, 77.9],
+    [-4,  '128/82', 80, 36.9, 17, 97, 77.6],
+    [-2,  '126/80', 77, 36.8, 17, 98, 77.4],
+    [-1,  '124/78', 75, 36.8, 16, 98, 77.2]
+  ];
+  for (const [offsetDays, bp, pulse, temp, rr, spo2, weight] of pat2VitalsSeries) {
+    db.run(
+      `INSERT INTO patient_vitals (patient_id, encounter_type, blood_pressure, pulse, temperature, respiratory_rate, oxygen_saturation, height_cm, weight_kg, recorded_by, created_at)
+       VALUES (?, 'IPD', ?, ?, ?, ?, ?, 176, ?, ?, datetime('now', ?))`,
+      [pat2.id, bp, pulse, temp, rr, spo2, weight, nurseUser.id, `${offsetDays} days`]
+    );
+  }
 
   // Sample appointment, consultation, diagnosis, prescription, lab order
   const firstDoc = db.get('SELECT id, branch_id, department_id, consultation_fee FROM doctor_profiles WHERE doctor_code = ?', ['DR-2001']);

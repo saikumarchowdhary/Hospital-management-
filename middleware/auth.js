@@ -173,8 +173,11 @@ export function createAuthMiddleware(db, jwtSecret) {
         return res.status(401).json({ error: 'Invalid token type. Access token required.' });
       }
       const user = hydrateAuthenticatedUser(db, decoded.sub);
-      if (!user || !user.is_active || user.account_status !== 'Active' || user.role === 'pending_staff') {
-        return res.status(401).json({ error: 'Account is inactive, suspended, or pending verification.' });
+      const blockedStatuses = new Set(['Rejected', 'Suspended', 'Withdrawn']);
+      const isBlockedNonDoctor =
+        user && user.role !== 'doctor' && (user.account_status !== 'Active' || user.role === 'pending_staff');
+      if (!user || !user.is_active || blockedStatuses.has(user.account_status) || isBlockedNonDoctor) {
+        return res.status(401).json({ error: 'Account is inactive or suspended.' });
       }
       req.user = user;
       return next();

@@ -87,7 +87,7 @@ test('Section 2 Unified Sign-Up: Patient PT-000001 + consent, Candidate isolatio
     assert.equal((await candClient.get('/api/patients')).status, 403);
     assert.equal((await candClient.get('/api/admin/overview')).status, 403);
 
-    // 5. Doctor self-signup with multipart licence upload -> Pending Verification
+    // 5. Doctor self-signup with multipart licence upload -> immediate Active account + token + saved licence
     const fdDoc = new FormData();
     fdDoc.append('account_type', 'doctor');
     fdDoc.append('full_name', 'Dr. Clara Heart');
@@ -104,10 +104,25 @@ test('Section 2 Unified Sign-Up: Patient PT-000001 + consent, Candidate isolatio
     fdDoc.append('consultation_fee', '140');
     fdDoc.append('licence', new Blob(['%PDF-1.4 mock licence'], { type: 'application/pdf' }), 'licence.pdf');
 
-    const docReg = await ctx.createClient().post('/api/auth/register', fdDoc);
+    const claraClient = ctx.createClient();
+    const docReg = await claraClient.post('/api/auth/register', fdDoc);
     assert.equal(docReg.status, 201);
-    assert.equal(docReg.data.pendingVerification, true);
-    assert.equal(docReg.data.user.account_status, 'Pending Verification');
+    assert.equal(docReg.data.pendingVerification, undefined);
+    assert.equal(docReg.data.message, 'Account created successfully');
+    assert.ok(docReg.data.accessToken);
+    assert.equal(docReg.data.user.role, 'doctor');
+    assert.equal(docReg.data.user.account_status, 'Active');
+    assert.match(docReg.data.user.user_code, /^DOC-/);
+
+    // Doctor can immediately access protected doctor dashboard using the returned session
+    const docDashImmediate = await claraClient.get('/api/doctors/me/dashboard');
+    assert.equal(docDashImmediate.status, 200);
+    assert.equal(docDashImmediate.data.doctor.registration_number, 'MED-REG-77001');
+    assert.ok(docDashImmediate.data.doctor.licence_attachment_id);
+
+    // Licence attachment is stored and retrievable by admin
+    const attRes = await adm.get(`/api/admin/attachments/${docDashImmediate.data.doctor.licence_attachment_id}`);
+    assert.equal(attRes.status, 200);
 
     // Duplicate medical registration number blocked (409)
     const dupRegNo = await ctx.createClient().post('/api/auth/register', {
@@ -123,15 +138,16 @@ test('Section 2 Unified Sign-Up: Patient PT-000001 + consent, Candidate isolatio
     });
     assert.equal(dupRegNo.status, 409);
 
-    // Security check: Wrong password on pending doctor does NOT leak Pending Verification status
-    const wrongPwPending = await ctx.createClient().login('clara.heart@hospital.org', 'WrongPassword9');
-    assert.equal(wrongPwPending.status, 401);
-    assert.equal(wrongPwPending.data.error, 'Invalid credentials.');
+    // Wrong password rejected (401)
+    const wrongPwDoc = await ctx.createClient().login('clara.heart@hospital.org', 'WrongPassword9');
+    assert.equal(wrongPwDoc.status, 401);
+    assert.equal(wrongPwDoc.data.error, 'Invalid credentials.');
 
-    // Correct password shows Pending Verification status cleanly
-    const rightPwPending = await ctx.createClient().login('clara.heart@hospital.org', 'Password123');
-    assert.equal(rightPwPending.status, 403);
-    assert.equal(rightPwPending.data.account_status, 'Pending Verification');
+    // Correct password succeeds immediately with email OR phone
+    const docReLoginClient = ctx.createClient();
+    const docReLogin = await docReLoginClient.login('clara.heart@hospital.org', 'Password123');
+    assert.equal(docReLogin.status, 200);
+    assert.equal(docReLogin.data.user.schedule_configured, false);
 
     // Forgot password returns identical generic message regardless of email existence
     const fpUnknown = await ctx.createClient().post('/api/auth/forgot-password', { email: 'nobody@nowhere.org' });
@@ -165,31 +181,14 @@ test('Section 2 Unified Sign-Up: Patient PT-000001 + consent, Candidate isolatio
     });
     assert.equal(dupEmp.status, 409);
 
-    // 7. Admin inspects signup queues, views licence attachment, verifies doctor, requests info / rejects staff
+    // 7. Admin inspects non-doctor staff signup queue; doctor completes schedule setup wizard
     const queueRes = await adm.get('/api/admin/signup-requests');
     assert.equal(queueRes.status, 200);
-    assert.equal(queueRes.data.pendingDoctorsCount, 1);
+    assert.equal(queueRes.data.pendingDoctorsCount, 0);
     assert.equal(queueRes.data.pendingStaffCount, 1);
-
-    const docReqRow = queueRes.data.requests.find((r) => r.email === 'clara.heart@hospital.org');
-    assert.ok(docReqRow.licence_attachment_id);
-    const attRes = await adm.get(`/api/admin/attachments/${docReqRow.licence_attachment_id}`);
-    assert.equal(attRes.status, 200);
-
-    // Approve doctor -> creates doctor_profiles with schedule_configured = 0 (not visible in Find a Doctor yet!)
-    const approveDoc = await adm.post(`/api/admin/signup-requests/${docReqRow.id}/approve`, {
-      admin_notes: 'Verified licence against NMC'
-    });
-    assert.equal(approveDoc.status, 200);
 
     const patDocsBeforeWizard = await patClient.get('/api/doctors');
     assert.equal(patDocsBeforeWizard.data.doctors.length, 0);
-
-    // Doctor logs in -> schedule_configured is 0 -> completes setup wizard with break -> appears in Find a Doctor
-    const claraClient = ctx.createClient();
-    const claraLogin = await claraClient.login('clara.heart@hospital.org', 'Password123');
-    assert.equal(claraLogin.status, 200);
-    assert.equal(claraLogin.data.user.schedule_configured, false);
 
     const wizRes = await claraClient.put('/api/doctors/me/schedule-setup', {
       working_days: [0, 1, 2, 3, 4, 5, 6],

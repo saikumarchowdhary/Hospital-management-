@@ -4,6 +4,7 @@ import { seedClinicalData } from './seed_clinical.js';
 import { seedClinicalDepartmentDoctors } from './seed_doctors.js';
 import { seedOperationsData } from './seed_ops.js';
 import { MASTER_DEPARTMENTS, MASTER_SPECIALTIES, syncMasterSeedData } from './sync_master.js';
+import { syncUsersPhoneNormalized } from './migrations.js';
 
 export const ROLES = [
   ['patient', 'Patient', 'Appointments, records, bills, reports', 0],
@@ -312,6 +313,7 @@ export function seedDemoData(db) {
   if (existing && existing.cnt > 0) {
     syncMasterSeedData(db, ROLES, PERMISSIONS, ROLE_PERM_MAP, DEMO_USERS);
     seedClinicalDepartmentDoctors(db);
+    syncUsersPhoneNormalized(db);
     return;
   }
 
@@ -344,6 +346,7 @@ export function seedDemoData(db) {
   runDemo();
   syncMasterSeedData(db, ROLES, PERMISSIONS, ROLE_PERM_MAP, DEMO_USERS);
   seedClinicalDepartmentDoctors(db);
+  syncUsersPhoneNormalized(db);
 }
 
 export function seedDatabase(db) {

@@ -8,7 +8,8 @@ import { AppError, asyncHandler } from '../middleware/errors.js';
 import { isStrongPassword, validateRequest } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
-import { SELF_REGISTER_STAFF_ROLES, generateNextPatientCode, registerStaffPendingTx } from './registration_helpers.js';
+import { classifyLoginIdentifier, getPhoneLookupCandidates, normalizePhone } from '../services/phone.js';
+import { SELF_REGISTER_STAFF_ROLES, generateNextPatientCode, registerDoctorTx, registerStaffPendingTx } from './registration_helpers.js';
 
 function issueSessionTokens(userId, roleCode, jwtSecret, remember = true) {
   const accessTtlSec = remember ? 12 * 3600 : 4 * 3600;
@@ -22,16 +23,38 @@ function isDemoVerificationEnabled() {
   return process.env.NODE_ENV !== 'production' && !(process.env.ADMIN_INVITE_CODE || '').trim();
 }
 
-function verifyAdminInvitationCode(db, submittedCode, departmentId = null) {
+function isTimingSafeEqual(aStr, bStr) {
+  const a = Buffer.from(String(aStr || ''));
+  const b = Buffer.from(String(bStr || ''));
+  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function resolveAdminHrTargetRole(accountType, adminScope = '') {
+  const normType = String(accountType || '').trim().toLowerCase();
+  const normScope = String(adminScope || '').trim().toLowerCase();
+  if (normType === 'hr') return 'hr';
+  if (normType === 'super_admin' || normScope === 'super_admin') return 'admin';
+  if (normType === 'department_admin' || normScope === 'department_admin') return 'department_admin';
+  return 'admin';
+}
+
+function verifyAdminInvitationCode(db, submittedCode, departmentId = null, targetRole = null) {
   const raw = String(submittedCode || '').trim();
   if (!raw) return { ok: false };
-  const envCode = (process.env.ADMIN_INVITE_CODE || '').trim();
-  if (envCode) {
-    const a = Buffer.from(raw);
-    const b = Buffer.from(envCode);
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
-      return { ok: true, mode: 'env' };
+  if (targetRole === 'admin') {
+    const adminEnv = (process.env.ADMIN_ACCESS_PASSCODE || '').trim();
+    if (adminEnv && isTimingSafeEqual(raw, adminEnv)) {
+      return { ok: true, mode: 'env_role' };
     }
+  } else if (targetRole === 'department_admin') {
+    const deptEnv = (process.env.DEPT_ADMIN_ACCESS_PASSCODE || '').trim();
+    if (deptEnv && isTimingSafeEqual(raw, deptEnv)) {
+      return { ok: true, mode: 'env_role' };
+    }
+  }
+  const envCode = (process.env.ADMIN_INVITE_CODE || '').trim();
+  if (envCode && isTimingSafeEqual(raw, envCode)) {
+    return { ok: true, mode: 'env' };
   }
   const rows = db.all(
     `SELECT * FROM admin_verification_codes
@@ -41,6 +64,7 @@ function verifyAdminInvitationCode(db, submittedCode, departmentId = null) {
   for (const row of rows) {
     if (process.env.NODE_ENV === 'production' && row.is_demo) continue;
     if (row.department_id && departmentId && Number(row.department_id) !== Number(departmentId)) continue;
+    if (targetRole && row.target_role && row.target_role !== 'all' && row.target_role !== targetRole) continue;
     if (bcrypt.compareSync(raw, row.code_hash)) {
       return { ok: true, mode: 'db', codeId: row.id };
     }
@@ -101,10 +125,11 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
         const mainBranch = db.get("SELECT id FROM branches WHERE code = 'MAIN'") || db.get('SELECT id FROM branches ORDER BY id LIMIT 1');
         const admDept = db.get("SELECT id FROM departments WHERE name = 'Administration'") || db.get('SELECT id FROM departments ORDER BY id LIMIT 1');
 
+        const safeMobile = mobile ? normalizePhone(mobile) || String(mobile).trim() : '';
         const uInfo = db.run(
-          `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
-          [userCode, email, hash, full_name.trim(), mobile ? String(mobile).trim() : '', adminRole.id, mainBranch?.id || null, admDept?.id || null]
+          `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+          [userCode, email, hash, full_name.trim(), safeMobile, normalizePhone(safeMobile), adminRole.id, mainBranch?.id || null, admDept?.id || null]
         );
         db.run(
           `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, employment_status, base_salary)
@@ -216,31 +241,80 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
   router.post(
     '/login',
     limiter,
+    (req, _res, next) => {
+      if (req.body && !req.body.identifier) {
+        req.body.identifier = req.body.email || req.body.phone || req.body.name || req.body.full_name || '';
+      }
+      next();
+    },
     [
-      body('identifier').trim().notEmpty().withMessage('Email or User ID is required.'),
+      body('identifier').trim().notEmpty().withMessage('Name, Email, or Phone is required.'),
       body('password').notEmpty().withMessage('Password is required.')
     ],
     validateRequest,
     asyncHandler(async (req, res) => {
       const { identifier, password, remember = true, expected_role = null, expected_portal = null } = req.body;
-      const user = db.get(
-        `SELECT u.*, r.code as role, r.name as role_name, r.is_staff,
+      const classified = classifyLoginIdentifier(identifier);
+      const baseSelect = `SELECT u.*, r.code as role, r.name as role_name, r.is_staff,
                 d.name as department_name, b.name as branch_name
          FROM users u
          JOIN roles r ON r.id = u.role_id
          LEFT JOIN departments d ON d.id = u.department_id
          LEFT JOIN branches b ON b.id = u.branch_id
-         LEFT JOIN employee_profiles ep ON ep.user_id = u.id
-         WHERE lower(u.email) = lower(?) OR upper(u.user_code) = upper(?) OR upper(ep.employee_code) = upper(?)`,
-        [identifier, identifier, identifier]
-      );
+         LEFT JOIN employee_profiles ep ON ep.user_id = u.id`;
+
+      let user = null;
+      if (classified.kind === 'email') {
+        user = db.get(`${baseSelect} WHERE lower(u.email) = lower(?) LIMIT 1`, [classified.value]);
+      } else if (classified.kind === 'phone') {
+        if (classified.value) {
+          user = db.get(`${baseSelect} WHERE u.phone_normalized = ? LIMIT 1`, [classified.value]);
+        }
+        if (!user && classified.candidates.length > 0) {
+          const placeholders = classified.candidates.map(() => '?').join(', ');
+          user = db.get(
+            `${baseSelect} WHERE u.phone_normalized IN (${placeholders}) OR u.phone = ? LIMIT 1`,
+            [...classified.candidates, String(identifier).trim()]
+          );
+        }
+      } else {
+        user = db.get(
+          `${baseSelect} WHERE upper(u.user_code) = upper(?) OR upper(ep.employee_code) = upper(?) OR upper(u.hospital_id) = upper(?) LIMIT 1`,
+          [classified.value, classified.value, classified.value]
+        );
+        if (!user) {
+          const nameCandidates = db.all(
+            `${baseSelect} WHERE lower(trim(u.full_name)) = lower(trim(?)) ORDER BY u.id DESC`,
+            [classified.value]
+          );
+          if (nameCandidates.length > 0) {
+            const normExpRole = expected_role === 'super_admin' ? 'admin' : expected_role;
+            const portalMatchesRole = (candidate) => {
+              if (normExpRole) return candidate.role === normExpRole;
+              if (expected_portal === 'admin' || expected_portal === 'super_admin') return candidate.role === 'admin';
+              if (expected_portal === 'department_admin') return candidate.role === 'department_admin';
+              if (expected_portal === 'hr') return candidate.role === 'hr';
+              if (expected_portal === 'publisher') return candidate.role === 'publisher';
+              if (expected_portal === 'approver') return candidate.role === 'approver';
+              return false;
+            };
+            const ordered = [
+              ...nameCandidates.filter(portalMatchesRole),
+              ...nameCandidates.filter((c) => !portalMatchesRole(c)),
+            ];
+            user =
+              ordered.find((c) => !(c.locked_until && new Date(c.locked_until) > new Date()) && bcrypt.compareSync(password, c.password_hash)) ||
+              ordered[0];
+          }
+        }
+      }
 
       if (!user) return res.status(401).json({ error: 'Invalid credentials.' });
       if (user.locked_until && new Date(user.locked_until) > new Date()) {
         return res.status(423).json({ error: 'Account temporarily locked due to repeated failed attempts. Try again later.' });
       }
 
-      // Verify password BEFORE inspecting account status so login never leaks whether an email exists on invalid password
+      // Verify password BEFORE inspecting account status so login never leaks whether an account exists on invalid password
       const valid = bcrypt.compareSync(password, user.password_hash);
       if (!valid) {
         const attempts = user.failed_attempts + 1;
@@ -267,13 +341,7 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
           account_status: user.account_status || 'Suspended'
         });
       }
-      if (user.account_status === 'Pending Verification') {
-        return res.status(403).json({
-          error: 'Your doctor account is pending licence verification by hospital administration.',
-          account_status: 'Pending Verification'
-        });
-      }
-      if (user.account_status === 'Pending Approval' || user.role === 'pending_staff') {
+      if (user.role !== 'doctor' && (user.account_status === 'Pending Approval' || user.role === 'pending_staff')) {
         return res.status(403).json({
           error: 'Your registration is awaiting administrator approval. Please check back once approved.',
           account_status: user.account_status || 'Pending Approval'
@@ -349,10 +417,16 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
     '/register',
     limiter,
     regUpload,
+    (req, _res, next) => {
+      if (req.body && req.body.mobile === undefined && req.body.phone !== undefined) {
+        req.body.mobile = req.body.phone;
+      }
+      next();
+    },
     [
       body('full_name').trim().isLength({ min: 2 }).withMessage('Full name is required.'),
-      body('email').isEmail().normalizeEmail().withMessage('Valid email is required.'),
-      body('mobile').trim().isLength({ min: 6 }).withMessage('Valid mobile number is required.'),
+      body('email').isEmail().normalizeEmail({ gmail_remove_dots: false }).withMessage('Valid email is required.'),
+      body('mobile').trim().custom((val) => normalizePhone(val).replace(/\D/g, '').length >= 6).withMessage('Valid mobile number is required.'),
       body('password').custom(isStrongPassword).withMessage('Password must be at least 8 characters and include at least one number.')
     ],
     validateRequest,
@@ -365,12 +439,17 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       }
 
       if (accType === 'doctor' || reqRole === 'doctor') {
-        const pendingDoctor = registerStaffPendingTx(db, broker, { ...req.body, account_type: 'doctor', requested_role: 'doctor' }, req.ip, req.files);
+        const createdDoctor = registerDoctorTx(db, broker, { ...req.body, account_type: 'doctor', requested_role: 'doctor' }, req.ip, req.files);
+        const { accessToken, refreshToken, expiresAt } = issueSessionTokens(createdDoctor.id, 'doctor', jwtSecret, true);
+        setAuthCookie(req, res, accessToken, true, refreshToken);
+        const hydratedUser = hydrateAuthenticatedUser(db, createdDoctor.id);
         return res.status(201).json({
-          pendingVerification: true,
-          pendingApproval: true,
-          message: `Doctor verification submitted (${pendingDoctor.user_code}). Your credentials are pending administrator verification.`,
-          user: pendingDoctor
+          token: accessToken,
+          accessToken,
+          refreshToken,
+          expiresAt,
+          message: 'Account created successfully',
+          user: hydratedUser
         });
       }
 
@@ -401,9 +480,15 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       }
 
       const safeEmail = String(email).trim().toLowerCase();
-      const safeMobile = String(mobile).trim();
-      const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?) OR phone = ?', [safeEmail, safeMobile]);
-      if (dup) throw new AppError(409, 'An account with this email or mobile number already exists.');
+      const normPhone = normalizePhone(mobile);
+      const phoneCandidates = getPhoneLookupCandidates(mobile);
+      const dupEmail = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [safeEmail]);
+      if (dupEmail) throw new AppError(409, 'An account with this email already exists.');
+      if (phoneCandidates.length > 0) {
+        const phPlaceholders = phoneCandidates.map(() => '?').join(', ');
+        const dupPhone = db.get(`SELECT id FROM users WHERE phone_normalized IN (${phPlaceholders}) OR phone = ?`, [...phoneCandidates, String(mobile).trim()]);
+        if (dupPhone) throw new AppError(409, 'An account with this phone number already exists.');
+      }
 
       const role = db.get('SELECT id, code, name FROM roles WHERE code = ?', [safeRoleCode]);
       const hash = bcrypt.hashSync(password, 10);
@@ -412,9 +497,9 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
 
       const created = db.transaction(() => {
         const uInfo = db.run(
-          `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, account_status)
-           VALUES (?, ?, ?, ?, ?, ?, 1, 'Active')`,
-          [userCode, safeEmail, hash, full_name.trim(), safeMobile, role.id]
+          `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, account_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+          [userCode, safeEmail, hash, full_name.trim(), normPhone || String(mobile).trim(), normPhone, role.id]
         );
         let patientCode = null;
         if (safeRoleCode === 'patient') {
@@ -469,9 +554,9 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       full_name,
       email,
       mobile,
-      employee_id,
-      department_id,
-      designation,
+      employee_id = '',
+      department_id = '',
+      designation = '',
       password,
       confirm_password,
       account_type = 'department_admin',
@@ -482,9 +567,6 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
     if (!full_name || String(full_name).trim().length < 2) throw new AppError(400, 'Full name is required.');
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) throw new AppError(400, 'Valid email address is required.');
     if (!mobile || String(mobile).trim().length < 6) throw new AppError(400, 'Valid mobile number is required.');
-    if (!employee_id || String(employee_id).trim().length < 2) throw new AppError(400, 'Employee ID is required.');
-    if (!department_id) throw new AppError(400, 'Department selection is required.');
-    if (!designation || String(designation).trim().length < 2) throw new AppError(400, 'Designation is required.');
     if (!isStrongPassword(password)) throw new AppError(400, 'Password must be at least 8 characters and include at least one number.');
     if (confirm_password !== undefined && password !== confirm_password) {
       throw new AppError(400, 'Passwords do not match.');
@@ -496,13 +578,24 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       throw new AppError(400, 'Account type must be Admin or HR.');
     }
 
-    const deptIdNum = Number(department_id);
-    const dept = dbRef.get('SELECT * FROM departments WHERE id = ? AND is_active = 1', [deptIdNum]);
-    if (!dept) throw new AppError(400, 'Selected department does not exist or is inactive.');
+    const targetRoleCode = resolveAdminHrTargetRole(normType, normScope);
 
-    let targetRoleCode = 'hr';
+    let dept = null;
+    if (department_id !== undefined && department_id !== null && String(department_id).trim() !== '') {
+      const deptIdNum = Number(department_id);
+      dept = dbRef.get('SELECT * FROM departments WHERE id = ? AND is_active = 1', [deptIdNum]);
+      if (!dept) throw new AppError(400, 'Selected department does not exist or is inactive.');
+    } else if (targetRoleCode === 'admin') {
+      dept =
+        dbRef.get("SELECT * FROM departments WHERE name = 'Administration' AND is_active = 1 LIMIT 1") ||
+        dbRef.get('SELECT * FROM departments WHERE is_active = 1 ORDER BY id LIMIT 1');
+      if (!dept) throw new AppError(400, 'Department selection is required.');
+    } else {
+      throw new AppError(400, 'Department selection is required.');
+    }
+
     if (normType !== 'hr') {
-      const verified = verifiedCodeInfo || verifyAdminInvitationCode(dbRef, verification_code, dept.id);
+      const verified = verifiedCodeInfo || verifyAdminInvitationCode(dbRef, verification_code, dept.id, targetRoleCode);
       if (!verified.ok) {
         logAudit(dbRef, {
           actorUserId: null,
@@ -510,27 +603,40 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
           action: 'auth.admin_verification_failed',
           entityType: 'registration',
           entityId: String(email).trim().toLowerCase(),
-          details: JSON.stringify({ account_type: normType, department_id: dept.id }),
+          details: JSON.stringify({ account_type: normType, target_role: targetRoleCode, department_id: dept.id }),
           ip: req.ip
         });
         throw new AppError(403, 'Invalid Admin Verification Code.');
       }
       verifiedCodeInfo = verified;
-      if (normType === 'super_admin' || normScope === 'super_admin') {
-        targetRoleCode = 'admin';
-      } else if (normType === 'department_admin' || normScope === 'department_admin') {
-        targetRoleCode = 'department_admin';
-      } else {
-        targetRoleCode = 'admin';
-      }
     }
 
     const safeEmail = String(email).trim().toLowerCase();
-    const safeMobile = String(mobile).trim();
-    const safeEmpId = String(employee_id).trim();
+    const normMobile = normalizePhone(mobile) || String(mobile).trim();
+    const phoneCandidates = getPhoneLookupCandidates(mobile);
+    const prefix = targetRoleCode === 'admin' ? 'ADM' : targetRoleCode === 'department_admin' ? 'DADM' : 'HR';
+    const trimmedEmpId = String(employee_id || '').trim();
+    const safeEmpId =
+      trimmedEmpId.length >= 2
+        ? trimmedEmpId
+        : `EMP-${prefix}-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
+    const safeDesignation =
+      String(designation || '').trim().length >= 2
+        ? String(designation).trim()
+        : targetRoleCode === 'admin'
+        ? 'System Administrator'
+        : targetRoleCode === 'department_admin'
+        ? 'Department Administrator'
+        : 'HR Coordinator';
 
     if (dbRef.get('SELECT id FROM users WHERE lower(email) = lower(?)', [safeEmail])) {
       throw new AppError(409, 'An account with this email address already exists.');
+    }
+    if (phoneCandidates.length > 0) {
+      const phPlaceholders = phoneCandidates.map(() => '?').join(', ');
+      if (dbRef.get(`SELECT id FROM users WHERE phone_normalized IN (${phPlaceholders}) OR phone = ?`, [...phoneCandidates, String(mobile).trim()])) {
+        throw new AppError(409, 'An account with this phone number already exists.');
+      }
     }
     if (
       dbRef.get('SELECT id FROM employee_profiles WHERE upper(employee_code) = upper(?)', [safeEmpId]) ||
@@ -542,20 +648,19 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
     const roleRow = dbRef.get('SELECT id, code, name FROM roles WHERE code = ?', [targetRoleCode]);
     if (!roleRow) throw new AppError(500, `Role configuration missing for ${targetRoleCode}.`);
 
-    const prefix = targetRoleCode === 'admin' ? 'ADM' : targetRoleCode === 'department_admin' ? 'DADM' : 'HR';
     const userCode = `${prefix}-${String(Date.now()).slice(-4)}${crypto.randomInt(10, 99)}`;
     const hash = bcrypt.hashSync(password, 10);
 
     const createdId = dbRef.transaction(() => {
       const uInfo = dbRef.run(
-        `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
-        [userCode, safeEmail, hash, String(full_name).trim(), safeMobile, roleRow.id, dept.branch_id || 1, dept.id]
+        `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+        [userCode, safeEmail, hash, String(full_name).trim(), normMobile, normalizePhone(normMobile), roleRow.id, dept.branch_id || 1, dept.id]
       );
       dbRef.run(
         `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, employment_status, base_salary)
          VALUES (?, ?, ?, ?, ?, date('now'), 'Active', ?)`,
-        [uInfo.lastInsertRowid, safeEmpId, dept.id, dept.branch_id || 1, String(designation).trim(), targetRoleCode === 'hr' ? 5800 : 7500]
+        [uInfo.lastInsertRowid, safeEmpId, dept.id, dept.branch_id || 1, safeDesignation, targetRoleCode === 'hr' ? 5800 : 7500]
       );
       if (verifiedCodeInfo?.codeId) {
         dbRef.run('UPDATE admin_verification_codes SET used_count = used_count + 1 WHERE id = ?', [verifiedCodeInfo.codeId]);
@@ -599,14 +704,15 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       body('full_name').trim().isLength({ min: 2 }).withMessage('Full name is required.'),
       body('email').isEmail().normalizeEmail().withMessage('Valid email address is required.'),
       body('mobile').trim().isLength({ min: 6 }).withMessage('Valid mobile number is required.'),
-      body('employee_id').trim().isLength({ min: 2 }).withMessage('Employee ID is required.'),
-      body('department_id').notEmpty().withMessage('Department selection is required.'),
-      body('designation').trim().isLength({ min: 2 }).withMessage('Designation is required.'),
+      body('employee_id').optional({ checkFalsy: true }).trim().isLength({ min: 2 }).withMessage('Employee ID must be at least 2 characters.'),
+      body('department_id').optional({ checkFalsy: true }),
+      body('designation').optional({ checkFalsy: true }).trim().isLength({ min: 2 }).withMessage('Designation must be at least 2 characters.'),
       body('password').custom(isStrongPassword).withMessage('Password must be at least 8 characters and include at least one number.')
     ],
     validateRequest,
     asyncHandler(async (req, res) => {
       const normType = String(req.body.account_type || '').trim().toLowerCase();
+      const targetRoleCode = resolveAdminHrTargetRole(normType, req.body.admin_scope);
       const isAdminType = ['admin', 'super_admin', 'department_admin'].includes(normType);
       const adminCount = db.get(`SELECT COUNT(*) as cnt FROM users u JOIN roles r ON r.id = u.role_id WHERE r.code = 'admin' AND u.is_active = 1`)?.cnt || 0;
       let verifiedCode = null;
@@ -628,7 +734,7 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
           if (!verCode) {
             throw new AppError(403, 'Invalid Admin Verification Code.');
           }
-          const verified = verifyAdminInvitationCode(db, verCode, req.body.department_id);
+          const verified = verifyAdminInvitationCode(db, verCode, req.body.department_id, targetRoleCode);
           if (!verified.ok) {
             throw new AppError(403, 'Invalid Admin Verification Code.');
           }
@@ -685,8 +791,11 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       return res.status(401).json({ error: 'Refresh token expired or invalid. Please log in again.' });
     }
     const user = hydrateAuthenticatedUser(db, decoded.sub);
-    if (!user || !user.is_active || user.account_status !== 'Active' || user.role === 'pending_staff') {
-      return res.status(401).json({ error: 'Account is inactive, suspended, or awaiting verification.' });
+    const blockedStatuses = new Set(['Rejected', 'Suspended', 'Withdrawn']);
+    const isBlockedNonDoctor =
+      user && user.role !== 'doctor' && (user.account_status !== 'Active' || user.role === 'pending_staff');
+    if (!user || !user.is_active || blockedStatuses.has(user.account_status) || isBlockedNonDoctor) {
+      return res.status(401).json({ error: 'Account is inactive or suspended.' });
     }
     const { accessToken, refreshToken, expiresAt } = issueSessionTokens(user.id, user.role, jwtSecret, true);
     setAuthCookie(req, res, accessToken, true, refreshToken);
@@ -733,11 +842,18 @@ export function createAuthRouter(db, jwtSecret, authenticate, broker = null, upl
       const current = db.get('SELECT id, full_name, phone FROM users WHERE id = ?', [req.user.id]);
       if (!current) throw new AppError(404, 'User not found.');
       const nextName = req.body.full_name !== undefined ? String(req.body.full_name).trim() : current.full_name;
-      const nextPhone = req.body.phone !== undefined ? String(req.body.phone).trim() : current.phone;
+      const nextPhoneRaw = req.body.phone !== undefined ? String(req.body.phone).trim() : current.phone;
+      const nextPhoneNorm = normalizePhone(nextPhoneRaw);
+      if (nextPhoneNorm) {
+        const dupPhone = db.get('SELECT id FROM users WHERE phone_normalized = ? AND id != ?', [nextPhoneNorm, req.user.id]);
+        if (dupPhone) throw new AppError(409, 'An account with this phone number already exists.');
+      }
+      const nextPhone = nextPhoneRaw;
 
-      db.run("UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?", [
+      db.run("UPDATE users SET full_name = ?, phone = ?, phone_normalized = ?, updated_at = datetime('now') WHERE id = ?", [
         nextName,
         nextPhone,
+        nextPhoneNorm || null,
         req.user.id
       ]);
 

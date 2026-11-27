@@ -6,6 +6,7 @@ import { AppError, asyncHandler } from '../middleware/errors.js';
 import { isStrongPassword } from '../middleware/validation.js';
 import { logAudit } from '../services/audit.js';
 import { createNotification } from '../services/notifications.js';
+import { getPhoneLookupCandidates, normalizePhone } from '../services/phone.js';
 import { approveSignupRequestTx, generateNextPatientCode, rejectSignupRequestTx } from './registration_helpers.js';
 
 function parseCsvRows(csvText) {
@@ -159,11 +160,18 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
     if (!existing) throw new AppError(404, 'Member not found.');
 
     const { full_name, phone, department_id, branch_id, role_id, designation, qualification, shift, employment_type, base_salary, experience_years, consultation_fee, specialty_id } = req.body;
+    const nextPhoneRaw = phone !== undefined && phone !== null ? String(phone).trim() : null;
+    const nextPhoneNorm = nextPhoneRaw !== null ? normalizePhone(nextPhoneRaw) : null;
+    if (nextPhoneNorm) {
+      const dupPhone = db.get('SELECT id FROM users WHERE phone_normalized = ? AND id != ?', [nextPhoneNorm, uid]);
+      if (dupPhone) throw new AppError(409, 'An account with this phone number already exists.');
+    }
     db.transaction(() => {
       db.run(
         `UPDATE users SET full_name = COALESCE(?, full_name), phone = COALESCE(?, phone),
+                phone_normalized = CASE WHEN ? IS NOT NULL THEN ? ELSE phone_normalized END,
                 department_id = ?, branch_id = COALESCE(?, branch_id), role_id = COALESCE(?, role_id), updated_at = datetime('now') WHERE id = ?`,
-        [full_name?.trim() || null, phone ?? null, department_id !== undefined ? (department_id ? Number(department_id) : null) : existing.department_id, branch_id ? Number(branch_id) : null, role_id ? Number(role_id) : null, uid]
+        [full_name?.trim() || null, nextPhoneRaw, nextPhoneRaw, nextPhoneNorm || null, department_id !== undefined ? (department_id ? Number(department_id) : null) : existing.department_id, branch_id ? Number(branch_id) : null, role_id ? Number(role_id) : null, uid]
       );
       const emp = db.get('SELECT id FROM employee_profiles WHERE user_id = ?', [uid]);
       if (emp) {
@@ -332,7 +340,11 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
         errors.push({ row: rowNum, email, message: `Unknown or invalid role "${roleCode}".` });
         continue;
       }
-      const dupUser = db.get('SELECT id FROM users WHERE lower(email) = lower(?) OR (? != \'\' AND phone = ?)', [email, mobile, mobile]);
+      const normMobile = normalizePhone(mobile);
+      const dupUser = db.get(
+        'SELECT id FROM users WHERE lower(email) = lower(?) OR (? != \'\' AND (phone_normalized = ? OR phone = ?))',
+        [email, normMobile || mobile, normMobile, mobile]
+      );
       if (dupUser) {
         errors.push({ row: rowNum, email, message: 'Email or mobile number already exists.' });
         continue;
@@ -356,9 +368,9 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
       try {
         const uid = db.transaction(() => {
           const uInfo = db.run(
-            `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
-            [uCode, email, hash, fullName, mobile, roleObj.id, branchMatch?.id || 1, deptMatch?.id || null]
+            `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+            [uCode, email, hash, fullName, normMobile || mobile, normMobile || null, roleObj.id, branchMatch?.id || 1, deptMatch?.id || null]
           );
           const newId = uInfo.lastInsertRowid;
 
@@ -426,13 +438,21 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
 
     const cleanName = String(full_name).trim();
     const cleanEmail = String(email).trim().toLowerCase();
-    const cleanPhone = String(phone).trim();
+    const cleanPhone = normalizePhone(phone) || String(phone).trim();
+    const cleanPhoneNorm = normalizePhone(phone);
     if (cleanName.length < 2) throw new AppError(400, 'Full name is required.');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new AppError(400, 'Valid email address is required.');
     if (!isStrongPassword(password)) throw new AppError(400, 'Password must be at least 8 characters and include a number.');
 
     const dup = db.get('SELECT id FROM users WHERE lower(email) = lower(?)', [cleanEmail]);
     if (dup) throw new AppError(409, 'An account with this email address already exists.');
+    if (cleanPhoneNorm) {
+      const cands = getPhoneLookupCandidates(phone);
+      const ph = cands.map(() => '?').join(', ');
+      if (db.get(`SELECT id FROM users WHERE phone_normalized IN (${ph})`, cands)) {
+        throw new AppError(409, 'An account with this phone number already exists.');
+      }
+    }
 
     const adminRole = db.get("SELECT id, code, name FROM roles WHERE code = 'admin'");
     if (!adminRole) throw new AppError(500, 'Admin role configuration missing.');
@@ -446,9 +466,9 @@ export function registerAdminMembersRoutes(router, db, broker, upload = null) {
 
     const createdId = db.transaction(() => {
       const uInfo = db.run(
-        `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id, is_active, account_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
-        [userCode, cleanEmail, hash, cleanName, cleanPhone, adminRole.id, Number(branch_id || admDept?.branch_id || 1), admDept?.id || null]
+        `INSERT INTO users (user_code, email, password_hash, full_name, phone, phone_normalized, role_id, branch_id, department_id, is_active, account_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Active')`,
+        [userCode, cleanEmail, hash, cleanName, cleanPhone, cleanPhoneNorm || null, adminRole.id, Number(branch_id || admDept?.branch_id || 1), admDept?.id || null]
       );
       db.run(
         `INSERT INTO employee_profiles (user_id, employee_code, department_id, branch_id, designation, joining_date, employment_status, base_salary)

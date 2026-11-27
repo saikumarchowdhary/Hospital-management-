@@ -84,6 +84,16 @@ test('Admissions & Housekeeping: bed allocation, duplicate bed conflict, dischar
 
     const updatedBed = (await cm.get('/api/beds')).data.beds.find((b) => b.id === availBed.id);
     assert.equal(updatedBed.status, 'Available');
+
+    // Transitioning to Maintenance and back to Available returns enriched bed metadata for push alerts
+    const toMaint = await cm.patch(`/api/beds/${availBed.id}/status`, { status: 'Maintenance' });
+    assert.equal(toMaint.status, 200);
+    assert.equal(toMaint.data.bed.status, 'Maintenance');
+    const backAvail = await cm.patch(`/api/beds/${availBed.id}/status`, { status: 'Available' });
+    assert.equal(backAvail.status, 200);
+    assert.equal(backAvail.data.bed.status, 'Available');
+    assert.ok(backAvail.data.bed.ward_name);
+    assert.ok(backAvail.data.bed.room_number);
   } finally {
     await ctx.close();
   }

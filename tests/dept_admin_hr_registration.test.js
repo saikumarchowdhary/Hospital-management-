@@ -66,7 +66,7 @@ test('Admin & HR Registration: verification codes, HR bypass, duplicate checks, 
     const cardioReg = await cardioClient.post('/api/auth/register-admin-hr', {
       full_name: 'Dr. Alice CardioAdmin',
       email: 'alice.cardio@hospital.org',
-      mobile: '+1-555-0201',
+      mobile: '+1-555-7201',
       employee_id: 'EMP-CARD-201',
       department_id: cardio.id,
       designation: 'Cardiology Department Administrator',
@@ -85,7 +85,7 @@ test('Admin & HR Registration: verification codes, HR bypass, duplicate checks, 
     const neuroReg = await neuroClient.post('/api/auth/register-admin-hr', {
       full_name: 'Dr. Bob NeuroAdmin',
       email: 'bob.neuro@hospital.org',
-      mobile: '+1-555-0202',
+      mobile: '+1-555-7202',
       employee_id: 'EMP-NEUR-202',
       department_id: neuro.id,
       designation: 'Neurology Department Administrator',
@@ -103,7 +103,7 @@ test('Admin & HR Registration: verification codes, HR bypass, duplicate checks, 
     const superReg = await superClient.post('/api/auth/register-admin-hr', {
       full_name: 'Elena Vance SuperAdmin',
       email: 'elena.super@hospital.org',
-      mobile: '+1-555-0203',
+      mobile: '+1-555-7203',
       employee_id: 'EMP-SUP-203',
       department_id: ops.id,
       designation: 'Chief Hospital Administrator',
@@ -120,7 +120,7 @@ test('Admin & HR Registration: verification codes, HR bypass, duplicate checks, 
     const hrReg = await hrRegClient.post('/api/auth/register-admin-hr', {
       full_name: 'Priya Sharma HR',
       email: 'priya.hr@hospital.org',
-      mobile: '+1-555-0204',
+      mobile: '+1-555-7204',
       employee_id: 'EMP-HR-204',
       department_id: hrDept.id,
       designation: 'HR Generalist',
@@ -404,3 +404,118 @@ test('Login portals, strict department-level RBAC restrictions, HR dept filterin
     await srv.close();
   }
 });
+
+test('Admin & Department Admin Create Account passcodes and Name + Password login', async () => {
+  const srv = await startTestServer();
+  const prevNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+
+  try {
+    const anon = srv.createClient();
+    const metaRes = await anon.get('/api/auth/registration-meta');
+    assert.equal(metaRes.status, 200);
+    const cardio = metaRes.data.departments.find((d) => d.name === 'Cardiology');
+    assert.ok(cardio);
+
+    // Cross-role passcode must be rejected: department admin passcode cannot create admin
+    const wrongAdminPasscode = await anon.post('/api/auth/register-admin-hr', {
+      full_name: 'Nora CrossRole',
+      email: 'nora.cross@hospital.org',
+      mobile: '+1-555-8801',
+      account_type: 'admin',
+      verification_code: '1234department admin',
+      password: '1234admin',
+      confirm_password: '1234admin',
+    });
+    assert.equal(wrongAdminPasscode.status, 403);
+
+    // Cross-role passcode must be rejected: admin passcode cannot create department_admin
+    const wrongDeptPasscode = await anon.post('/api/auth/register-admin-hr', {
+      full_name: 'Owen CrossRole',
+      email: 'owen.cross@hospital.org',
+      mobile: '+1-555-8802',
+      department_id: cardio.id,
+      account_type: 'department_admin',
+      verification_code: '1234admin',
+      password: '1234department admin',
+      confirm_password: '1234department admin',
+    });
+    assert.equal(wrongDeptPasscode.status, 403);
+
+    // Create Admin with 1234admin passcode & auto-generated employee_id/designation
+    const adminCreate = await anon.post('/api/auth/register-admin-hr', {
+      full_name: 'Clara Vance Admin',
+      email: 'clara.vance@hospital.org',
+      mobile: '+1-555-8803',
+      account_type: 'admin',
+      admin_scope: 'super_admin',
+      verification_code: '1234admin',
+      password: '1234admin',
+      confirm_password: '1234admin',
+    });
+    assert.equal(adminCreate.status, 201);
+    assert.equal(adminCreate.data.user.role, 'admin');
+    assert.ok(adminCreate.data.accessToken);
+
+    // Create Department Admin with 1234department admin passcode
+    const deptCreate = await srv.createClient().post('/api/auth/register-admin-hr', {
+      full_name: 'Victor Sterling Dept',
+      email: 'victor.sterling@hospital.org',
+      mobile: '+1-555-8804',
+      department_id: cardio.id,
+      account_type: 'department_admin',
+      admin_scope: 'department_admin',
+      verification_code: '1234department admin',
+      password: '1234department admin',
+      confirm_password: '1234department admin',
+    });
+    assert.equal(deptCreate.status, 201);
+    assert.equal(deptCreate.data.user.role, 'department_admin');
+    assert.equal(deptCreate.data.user.department_id, cardio.id);
+    assert.ok(deptCreate.data.accessToken);
+
+    // Log in Admin using Name + Password
+    const adminNameLogin = await srv.createClient().post('/api/auth/login', {
+      identifier: 'clara vance admin',
+      password: '1234admin',
+      expected_portal: 'admin',
+      expected_role: 'admin',
+    });
+    assert.equal(adminNameLogin.status, 200);
+    assert.equal(adminNameLogin.data.user.role, 'admin');
+    assert.equal(adminNameLogin.data.user.full_name, 'Clara Vance Admin');
+
+    // Wrong password rejected with 401
+    const adminWrongPass = await srv.createClient().post('/api/auth/login', {
+      identifier: 'Clara Vance Admin',
+      password: '1234department admin',
+      expected_portal: 'admin',
+      expected_role: 'admin',
+    });
+    assert.equal(adminWrongPass.status, 401);
+
+    // Log in Department Admin using Name + Password
+    const deptNameLogin = await srv.createClient().post('/api/auth/login', {
+      identifier: 'Victor Sterling Dept',
+      password: '1234department admin',
+      expected_portal: 'department_admin',
+      expected_role: 'department_admin',
+    });
+    assert.equal(deptNameLogin.status, 200);
+    assert.equal(deptNameLogin.data.user.role, 'department_admin');
+    assert.equal(deptNameLogin.data.user.department_id, cardio.id);
+
+    // Department Admin logging into Admin portal is denied with 403
+    const deptWrongPortal = await srv.createClient().post('/api/auth/login', {
+      identifier: 'Victor Sterling Dept',
+      password: '1234department admin',
+      expected_portal: 'admin',
+      expected_role: 'admin',
+    });
+    assert.equal(deptWrongPortal.status, 403);
+  } finally {
+    process.env.NODE_ENV = prevNodeEnv;
+    await srv.close();
+  }
+});
+

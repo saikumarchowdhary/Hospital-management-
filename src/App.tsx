@@ -81,6 +81,14 @@ import { PrescriptionsPanel } from './components/PrescriptionsPanel';
 import { PrescriptionVerifyPage } from './components/PrescriptionVerifyPage';
 import { AdminQrLabelsPanel } from './components/AdminQrLabelsPanel';
 import { Megaphone, Building2, ClipboardCheck, FileText, QrCode } from 'lucide-react';
+import { QrScannerModal } from './components/QrScannerModal';
+import { VitalsTrendChart } from './components/VitalsTrendChart';
+import {
+  BrowserNotificationPermissionState,
+  getBrowserNotificationPermission,
+  requestBrowserNotificationPermission,
+  sendBrowserNotification,
+} from './lib/browserNotifications';
 
 const ADMIN_TAB_TO_PATH: Record<string, string> = {
   dashboard: '/admin/dashboard',
@@ -289,6 +297,26 @@ export default function App() {
   const LOG_PAGE_SIZE = 15;
   const [profileForm, setProfileForm] = useState({ full_name: '', phone: '' });
   const [pwdForm, setPwdForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
+  const [qrScannerOpen, setQrScannerOpen] = useState(false);
+  const [scannedResultRecord, setScannedResultRecord] = useState<{ raw: string; parsed: any } | null>(null);
+
+  const handleQrScanResult = (raw: string, parsed: any) => {
+    setScannedResultRecord({ raw, parsed });
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.type === 'HMS_BED_ASSIGNMENT') {
+        setActiveTab('beds');
+        setSearchQuery(parsed.bed || parsed.patient || '');
+      } else if (parsed.type === 'HMS_PATIENT' || parsed.patient_code) {
+        setActiveTab('patients');
+        setSearchQuery(parsed.patient_code || parsed.name || '');
+      } else if (parsed.type === 'HMS_DEPARTMENT_LABEL') {
+        setActiveTab('admin_qr_labels');
+        setSearchQuery(parsed.code || parsed.name || '');
+      }
+    } else if (typeof raw === 'string' && raw.includes('/verify/prescription/')) {
+      window.location.href = raw;
+    }
+  };
 
   const notify = useCallback((message: string, tone: 'success' | 'error' = 'success') => {
     setToast({ message, tone });
@@ -314,8 +342,24 @@ export default function App() {
 
   // Modals for Bed management
   const [selectedBedForChange, setSelectedBedForChange] = useState<any>(null);
+  const [selectedBedForHistory, setSelectedBedForHistory] = useState<any>(null);
+  const [subscribedBedAlerts, setSubscribedBedAlerts] = useState<Record<number, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('careline_bed_push_alerts');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [browserNotifPermission, setBrowserNotifPermission] = useState<BrowserNotificationPermissionState>(() =>
+    getBrowserNotificationPermission()
+  );
+  const subscribedBedAlertsRef = useRef<Record<number, boolean>>(subscribedBedAlerts);
+  const prevBedStatusRef = useRef<Record<number, string>>({});
   const [bedEditStatus, setBedEditStatus] = useState('Available');
   const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [bedStartDate, setBedStartDate] = useState('2026-01-01');
+  const [bedEndDate, setBedEndDate] = useState('2027-12-31');
   const [transferData, setTransferData] = useState({
     fromBedId: '',
     toBedId: '',
@@ -333,6 +377,10 @@ export default function App() {
   });
 
   const [beds, setBeds] = useState<any[]>([]);
+  const [patientDashboard, setPatientDashboard] = useState<any>(null);
+  const [doctorPatients, setDoctorPatients] = useState<any[]>([]);
+  const [selectedMonitorPatientId, setSelectedMonitorPatientId] = useState<string>('');
+  const [monitorPatientVitals, setMonitorPatientVitals] = useState<any[]>([]);
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
   const [rbacOverview, setRbacOverview] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -380,7 +428,44 @@ export default function App() {
           department_name: b.department_name || null,
           active_admission_id: b.active_admission_id || null,
         }));
+        const prevMap = prevBedStatusRef.current;
+        const nextMap: Record<number, string> = {};
+        for (const bed of mappedBeds) {
+          nextMap[bed.id] = bed.status;
+          const prevStatus = prevMap[bed.id];
+          if (prevStatus && prevStatus !== 'Available' && bed.status === 'Available' && subscribedBedAlertsRef.current[bed.id]) {
+            const title = `Bed ${bed.code} Now Available`;
+            const body = `${bed.ward} · Room ${bed.room} transitioned from ${prevStatus} to Available.`;
+            notify(body, 'success');
+            sendBrowserNotification({ title, body, tag: `bed-available-${bed.id}` });
+            setNotifications((prev) => [
+              { id: `bed-push-${bed.id}-${Date.now()}`, title, message: body, is_read: false },
+              ...prev,
+            ]);
+          }
+        }
+        prevBedStatusRef.current = nextMap;
         setBeds(mappedBeds);
+      }
+
+      if (user.role === 'patient') {
+        const pDash = await apiRequest('/api/patients/me/dashboard').catch(() => null);
+        if (pDash) setPatientDashboard(pDash);
+      } else {
+        setPatientDashboard(null);
+      }
+
+      if (user.role === 'doctor') {
+        const patListRes = await apiRequest('/api/patients').catch(() => ({ patients: [] }));
+        const patList = patListRes.patients || [];
+        setDoctorPatients(patList);
+        if (patList[0]) {
+          const firstId = String(patList[0].id);
+          setSelectedMonitorPatientId((prev) => prev || firstId);
+        }
+      } else {
+        setDoctorPatients([]);
+        setMonitorPatientVitals([]);
       }
 
       const pubNoticesRes = await apiRequest('/api/publisher').catch(() => ({ announcements: [] }));
@@ -426,6 +511,50 @@ export default function App() {
       notify(err.message || 'Workspace sync issue', 'error');
     }
   }, [notify]);
+
+  useEffect(() => {
+    subscribedBedAlertsRef.current = subscribedBedAlerts;
+    try {
+      localStorage.setItem('careline_bed_push_alerts', JSON.stringify(subscribedBedAlerts));
+    } catch {}
+  }, [subscribedBedAlerts]);
+
+  const toggleBedPushSubscription = useCallback(
+    async (bed: any) => {
+      const isEnabling = !subscribedBedAlertsRef.current[bed.id];
+      let currentPermission = getBrowserNotificationPermission();
+      if (isEnabling && currentPermission === 'default') {
+        currentPermission = await requestBrowserNotificationPermission();
+        setBrowserNotifPermission(currentPermission);
+      }
+      setSubscribedBedAlerts((prev) => ({ ...prev, [bed.id]: isEnabling }));
+      if (isEnabling) {
+        const permNote =
+          currentPermission === 'granted'
+            ? 'Browser push alerts enabled.'
+            : currentPermission === 'denied'
+            ? 'Browser notifications are blocked; alerts will still appear in-app.'
+            : 'In-app alerts enabled.';
+        notify(
+          `Real-time Push Notifications enabled for Bed ${bed.code} when Available. ${permNote}`,
+          'success'
+        );
+      } else {
+        notify(`Real-time Push Notifications disabled for Bed ${bed.code}.`, 'success');
+      }
+    },
+    [notify]
+  );
+
+  useEffect(() => {
+    if (userRoleCode === 'doctor' && selectedMonitorPatientId) {
+      apiRequest(`/api/patients/${selectedMonitorPatientId}`)
+        .then((res) => {
+          setMonitorPatientVitals(res?.clinical?.vitals || []);
+        })
+        .catch(() => setMonitorPatientVitals([]));
+    }
+  }, [userRoleCode, selectedMonitorPatientId, refreshSignal]);
 
   const getHomeTabForRole = useCallback((role: string) => {
     if (role === 'candidate') return 'careers';
@@ -579,14 +708,25 @@ export default function App() {
     }
   }, [activityLogs, isAutoScrollActive]);
 
+  const getPortalForRole = useCallback((role?: string | null): LoginPortalType => {
+    if (!role || role === 'patient' || role === 'candidate') return 'patient';
+    if (role === 'admin') return 'admin';
+    if (role === 'department_admin') return 'department_admin';
+    if (role === 'hr') return 'hr';
+    if (role === 'publisher') return 'publisher';
+    if (role === 'approver') return 'approver';
+    return 'staff';
+  }, []);
+
   const handleLogin = async (identifier: string, password: string) => {
     try {
-      const res = await apiRequest<{ token: string; user: AuthUser }>('/api/auth/login', {
+      const res = await apiRequest<{ token?: string; accessToken?: string; user: AuthUser }>('/api/auth/login', {
         method: 'POST',
         body: { identifier, password, remember: true },
       });
-      setAccessToken(res.token);
+      setAccessToken(res.accessToken || res.token || null);
       setAuthUser(res.user);
+      setAuthPortal(getPortalForRole(res.user.role));
       setAuthModalOpen(false);
       const nextTab = getHomeTabForRole(res.user.role);
       setActiveTab(nextTab);
@@ -604,6 +744,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    const lastPortal = getPortalForRole(authUser?.role);
     await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {});
     setAccessToken(null);
     setAuthUser(null);
@@ -611,6 +752,8 @@ export default function App() {
     setActivityLogs([]);
     setDashboardStats(null);
     setActiveTab('dashboard');
+    setAuthPortal(lastPortal);
+    setAuthInitialTab('login');
     window.history.replaceState(null, '', '/');
     setAuthModalOpen(true);
     notify('Signed out securely.', 'success');
@@ -815,6 +958,22 @@ export default function App() {
     }
     return [];
   }, [dashboardStats]);
+
+  const bedOccupancyByWardType = useMemo(() => {
+    const map: Record<string, { total: number; occupied: number }> = {};
+    for (const b of beds) {
+      const type = b.type || 'Standard';
+      if (!map[type]) map[type] = { total: 0, occupied: 0 };
+      map[type].total += 1;
+      if (b.status === 'Occupied') map[type].occupied += 1;
+    }
+    return Object.entries(map).map(([type, stats]) => ({
+      wardType: type,
+      Occupied: stats.occupied,
+      Available: stats.total - stats.occupied,
+      occupancyRate: Math.round((stats.occupied / stats.total) * 100),
+    }));
+  }, [beds]);
 
   const patientDeptDistributionData = useMemo(() => {
     const raw =
@@ -1301,9 +1460,19 @@ export default function App() {
           </form>
 
           <div className="flex items-center space-x-4 relative">
-            <span className="text-xs font-medium text-slate-600">
+            <span className="text-xs font-medium text-slate-600 hidden sm:inline">
               {authUser ? `${authUser.role_name} · ${authUser.email}` : 'Not Signed In'}
             </span>
+            {userRoleCode === 'patient' && (
+              <button
+                onClick={() => setQrScannerOpen(true)}
+                className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-2xs"
+                title="Scan QR Code"
+              >
+                <QrCode className="w-4 h-4 text-indigo-600" />
+                <span className="hidden sm:inline">Scan QR</span>
+              </button>
+            )}
             <button
               onClick={() => setNotifOpen(!notifOpen)}
               className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl relative"
@@ -1348,7 +1517,7 @@ export default function App() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">CareLine HMS — Role-Based Portals & Department Access</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Select your designated hospital portal to sign in, or create a verified Patient, Doctor, Candidate, or Staff account.</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Select your designated hospital portal to sign in, or create a verified Patient, Doctor, Candidate, Staff, Admin, or Department Admin account.</p>
                 </div>
                 <button
                   onClick={() => {
@@ -1510,8 +1679,139 @@ export default function App() {
             />
           )}
 
+          {/* PATIENT DASHBOARD */}
+          {isRouteAuthorized && activeTab === 'dashboard' && userRoleCode === 'patient' && (
+            <div className="space-y-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-900">Patient Health &amp; Recovery Dashboard</h2>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Personal appointments, prescriptions, diagnostic reports, and 30-day vitals recovery progress.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('patients')}
+                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
+                  >
+                    Open My EHR Profile
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Next Appointment</span>
+                    <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><CalendarIcon className="w-5 h-5" /></div>
+                  </div>
+                  <div className="mt-4">
+                    <div className="text-lg font-bold text-slate-900 font-mono tabular-nums">
+                      {patientDashboard?.upcomingAppointment
+                        ? `${patientDashboard.upcomingAppointment.appointment_date} ${patientDashboard.upcomingAppointment.appointment_time}`
+                        : 'None Scheduled'}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5 truncate">
+                      {patientDashboard?.upcomingAppointment?.doctor_name || 'Book from Appointments tab'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active Prescriptions</span>
+                    <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><Pill className="w-5 h-5" /></div>
+                  </div>
+                  <div className="mt-4 flex items-baseline justify-between">
+                    <h3 className="text-3xl font-bold text-slate-900 font-mono tabular-nums">
+                      {patientDashboard?.activeRxCount ?? 0}
+                    </h3>
+                    <button type="button" onClick={() => setActiveTab('prescriptions')} className="text-xs font-semibold text-blue-600 hover:underline">
+                      View Rx
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Released Lab Reports</span>
+                    <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><FileText className="w-5 h-5" /></div>
+                  </div>
+                  <div className="mt-4 flex items-baseline justify-between">
+                    <h3 className="text-3xl font-bold text-slate-900 font-mono tabular-nums">
+                      {patientDashboard?.releasedLabsCount ?? 0}
+                    </h3>
+                    <span className="text-xs font-semibold text-slate-500">Verified Results</span>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Balance</span>
+                    <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl"><CreditCard className="w-5 h-5" /></div>
+                  </div>
+                  <div className="mt-4 flex items-baseline justify-between">
+                    <h3 className="text-3xl font-bold text-slate-900 font-mono tabular-nums">
+                      ${Number(patientDashboard?.pendingPayments?.total ?? 0).toLocaleString()}
+                    </h3>
+                    <button type="button" onClick={() => setActiveTab('billing')} className="text-xs font-semibold text-blue-600 hover:underline">
+                      Pay / View
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <VitalsTrendChart
+                vitals={patientDashboard?.vitals || []}
+                patientName={patientDashboard?.profile?.full_name || authUser?.full_name}
+              />
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3">
+                  <h3 className="font-bold text-sm text-slate-900">Last Consultation &amp; Follow-Ups</h3>
+                  {patientDashboard?.lastConsultation ? (
+                    <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/70 text-xs space-y-1">
+                      <div className="font-bold text-slate-900">{patientDashboard.lastConsultation.chief_complaint}</div>
+                      <div className="text-slate-600">{patientDashboard.lastConsultation.treatment_plan || 'Follow standard care plan'}</div>
+                      <div className="text-slate-400">Attending: {patientDashboard.lastConsultation.doctor_name}</div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400">No completed consultations on record yet.</p>
+                  )}
+                  {(patientDashboard?.followUps || []).length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      {patientDashboard.followUps.slice(0, 3).map((fu: any) => (
+                        <div key={fu.id} className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg text-xs">
+                          <span className="text-slate-700 font-medium">{fu.doctor_name} · {fu.notes || 'Follow-up'}</span>
+                          <span className="font-mono text-blue-700 font-semibold">{fu.follow_up_date}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3">
+                  <h3 className="font-bold text-sm text-slate-900">Hospital Announcements</h3>
+                  {liveNotices.length > 0 ? (
+                    <div className="space-y-2">
+                      {liveNotices.slice(0, 3).map((n) => (
+                        <div key={n.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 text-xs space-y-1">
+                          <div className="font-bold text-slate-900">{n.title}</div>
+                          <p className="text-slate-600">{n.body}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400">No active notices at this time.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* DASHBOARD */}
-          {isRouteAuthorized && activeTab === 'dashboard' && !['candidate', 'department_admin', 'hr', 'publisher', 'approver'].includes(userRoleCode) && (
+          {isRouteAuthorized && activeTab === 'dashboard' && !['patient', 'candidate', 'department_admin', 'hr', 'publisher', 'approver'].includes(userRoleCode) && (
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
@@ -1617,6 +1917,33 @@ export default function App() {
                   </div>
                 </motion.div>
               </div>
+
+              {userRoleCode === 'doctor' && (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-base">Patient Recovery &amp; 30-Day Vitals Monitor</h3>
+                      <p className="text-xs text-slate-500">Select a patient to review recent vitals trends over the past 30 days.</p>
+                    </div>
+                    <select
+                      value={selectedMonitorPatientId}
+                      onChange={(e) => setSelectedMonitorPatientId(e.target.value)}
+                      className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800"
+                    >
+                      {doctorPatients.length === 0 && <option value="">No patients available</option>}
+                      {doctorPatients.map((p: any) => (
+                        <option key={p.id} value={p.id}>
+                          {p.full_name} ({p.patient_code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <VitalsTrendChart
+                    vitals={monitorPatientVitals}
+                    patientName={doctorPatients.find((p: any) => String(p.id) === String(selectedMonitorPatientId))?.full_name}
+                  />
+                </div>
+              )}
 
               {liveNotices.length > 0 && (
                 <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3">
@@ -2101,10 +2428,44 @@ export default function App() {
             <div className="space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-2xl font-bold text-slate-900">Inpatient Admissions & Bed Map</h2>
-                  <p className="text-sm text-slate-500 mt-1">Atomic SQLite bed transfers with optimistic locking, cleaning compliance gates, and occupancy trend.</p>
+                  <h2 className="text-2xl font-bold text-slate-900">Inpatient Admissions &amp; Bed Map</h2>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Atomic SQLite bed transfers, occupancy trends, and per-bed real-time push alerts when beds become Available.
+                  </p>
                 </div>
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const nextPerm = await requestBrowserNotificationPermission();
+                      setBrowserNotifPermission(nextPerm);
+                      if (nextPerm === 'granted') {
+                        notify('Browser push notifications enabled for subscribed beds.', 'success');
+                      } else if (nextPerm === 'denied') {
+                        notify('Browser notification permission was denied; in-app alerts remain active.', 'error');
+                      }
+                    }}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                      browserNotifPermission === 'granted'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    <Bell className="w-3.5 h-3.5" />
+                    <span>
+                      {browserNotifPermission === 'granted'
+                        ? `Push Alerts Ready (${Object.values(subscribedBedAlerts).filter(Boolean).length})`
+                        : browserNotifPermission === 'denied'
+                        ? 'Browser Alerts Blocked'
+                        : 'Enable Browser Alerts'}
+                    </span>
+                  </button>
+                  <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs">
+                    <span className="font-semibold text-slate-500">From:</span>
+                    <input type="date" value={bedStartDate} onChange={(e) => setBedStartDate(e.target.value)} className="bg-transparent text-slate-700 outline-none" />
+                    <span className="font-semibold text-slate-500">To:</span>
+                    <input type="date" value={bedEndDate} onChange={(e) => setBedEndDate(e.target.value)} className="bg-transparent text-slate-700 outline-none" />
+                  </div>
                   <select
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value)}
@@ -2114,6 +2475,7 @@ export default function App() {
                     <option value="Available">Available</option>
                     <option value="Occupied">Occupied</option>
                     <option value="Cleaning">Cleaning</option>
+                    <option value="Maintenance">Maintenance</option>
                   </select>
                   <button
                     onClick={() => {
@@ -2126,71 +2488,153 @@ export default function App() {
                       }));
                       setTransferModalOpen(true);
                     }}
-                    className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-sm"
+                    className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-sm whitespace-nowrap shrink-0"
                   >
                     <Plus className="w-4 h-4" />
-                    <span>Verify & Transfer Bed</span>
+                    <span>Verify &amp; Transfer Bed</span>
                   </button>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
-                <div className="flex items-center space-x-3 mb-4">
-                  <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><BarChart3 className="w-5 h-5" /></div>
-                  <div>
-                    <h3 className="font-bold text-slate-900 text-lg">Bed Occupancy Trend (Last 7 Days)</h3>
-                    <p className="text-xs text-slate-500">Hospital capacity utilization across wards</p>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
+                  <div className="flex items-center space-x-3 mb-4">
+                    <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><BarChart3 className="w-5 h-5" /></div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-lg">Bed Occupancy Trend (Last 7 Days)</h3>
+                      <p className="text-xs text-slate-500">Hospital capacity utilization across wards ({bedStartDate} to {bedEndDate})</p>
+                    </div>
+                  </div>
+                  <div className="h-60">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={bedOccupancyTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                        <XAxis dataKey="day" tick={{ fontSize: 12 }} stroke="#64748B" />
+                        <YAxis domain={[30, 100]} tick={{ fontSize: 12 }} stroke="#64748B" />
+                        <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#fff', border: 'none' }} />
+                        <Line type="monotone" dataKey="occupancy" stroke="#1E5EFF" strokeWidth={3} dot={{ r: 5 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
                   </div>
                 </div>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={bedOccupancyTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                      <XAxis dataKey="day" tick={{ fontSize: 12 }} stroke="#64748B" />
-                      <YAxis domain={[30, 100]} tick={{ fontSize: 12 }} stroke="#64748B" />
-                      <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#fff', border: 'none' }} />
-                      <Line type="monotone" dataKey="occupancy" stroke="#1E5EFF" strokeWidth={3} dot={{ r: 5 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
+
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
+                  <div className="flex items-center space-x-3 mb-4">
+                    <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><PieChartIcon className="w-5 h-5" /></div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-lg">Occupancy by Ward Type</h3>
+                      <p className="text-xs text-slate-500">High-demand area analytics for ICU, General, and Private wards</p>
+                    </div>
+                  </div>
+                  <div className="h-60">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={bedOccupancyByWardType} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                        <XAxis dataKey="wardType" tick={{ fontSize: 12 }} stroke="#64748B" />
+                        <YAxis tick={{ fontSize: 12 }} stroke="#64748B" />
+                        <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#fff', border: 'none' }} />
+                        <Bar dataKey="Occupied" name="Occupied" fill="#1E5EFF" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="Available" name="Available" fill="#10B981" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               </div>
 
               <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
                 <h3 className="font-bold text-slate-900 text-lg mb-4">Hospital Ward Floor Map</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                  {filteredBeds.map((bed, idx) => (
-                    <motion.div
-                      key={bed.id}
-                      initial={{ opacity: 0, y: 12 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.2, delay: idx * 0.02 }}
-                      onClick={() => {
-                        setSelectedBedForChange(bed);
-                        setBedEditStatus(bed.status);
-                      }}
-                      className={`p-4 rounded-2xl border cursor-pointer hover:shadow-md transition-all ${
-                        bed.status === 'Occupied' ? 'bg-blue-50/60 border-blue-200' :
-                        bed.status === 'Available' ? 'bg-emerald-50/60 border-emerald-200' :
-                        'bg-amber-50/60 border-amber-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-bold text-slate-900 text-sm">{bed.code}</span>
-                        <span className="text-xs font-bold text-slate-700">{bed.status}</span>
-                      </div>
-                      <p className="text-xs font-semibold text-slate-700">{bed.ward}</p>
-                      <p className="text-[11px] text-slate-500 mb-3">Room {bed.room} · {bed.type}</p>
-                      <div className="pt-2 border-t border-slate-200/60 text-xs">
-                        {bed.patient ? (
-                          <span className="font-semibold text-blue-900 flex items-center gap-1">
-                            <User className="w-3.5 h-3.5" /> {bed.patient}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {filteredBeds.map((bed, idx) => {
+                    const isMaintenanceThresholdExceeded = bed.status === 'Cleaning' || bed.status === 'Maintenance';
+                    return (
+                      <motion.div
+                        key={bed.id}
+                        initial={{ opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: idx * 0.02 }}
+                        onClick={() => {
+                          setSelectedBedForChange(bed);
+                          setBedEditStatus(bed.status);
+                        }}
+                        className={`p-4 rounded-2xl border cursor-pointer hover:shadow-md transition-all relative ${
+                          bed.status === 'Occupied' ? 'bg-blue-50/60 border-blue-200' :
+                          bed.status === 'Available' ? 'bg-emerald-50/60 border-emerald-200' :
+                          'bg-amber-50/60 border-amber-200'
+                        }`}
+                      >
+                        {isMaintenanceThresholdExceeded && (
+                          <span className="absolute top-3 right-3 inline-flex items-center gap-1 text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full shadow-xs">
+                            <AlertCircle className="w-3 h-3 text-rose-600" /> Turnover Warning
                           </span>
-                        ) : (
-                          <span className="text-slate-400 italic">Unassigned</span>
                         )}
-                      </div>
-                    </motion.div>
-                  ))}
+                        <div className="flex items-center justify-between mb-2 pr-12">
+                          <span className="font-bold text-slate-900 text-sm font-mono tabular-nums">{bed.code}</span>
+                          <span className="text-xs font-bold text-slate-700">{bed.status}</span>
+                        </div>
+                        <p className="text-xs font-semibold text-slate-700">{bed.ward}</p>
+                        <p className="text-[11px] text-slate-500 mb-2">Room {bed.room} · {bed.type}</p>
+
+                        <div className="flex items-center justify-between py-2 border-t border-slate-200/70">
+                          <span className="text-[11px] font-medium text-slate-600">Real-time Push Notifications</span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={Boolean(subscribedBedAlerts[bed.id])}
+                            aria-label={`Toggle Real-time Push Notifications for Bed ${bed.code}`}
+                            title={subscribedBedAlerts[bed.id] ? 'Disable Real-time Push Notifications when Available' : 'Enable Real-time Push Notifications when Available'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleBedPushSubscription(bed);
+                            }}
+                            className={`px-2 py-1 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${
+                              subscribedBedAlerts[bed.id]
+                                ? 'bg-amber-500 text-white border-amber-600'
+                                : 'bg-white hover:bg-slate-100 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            <Bell className={`w-3 h-3 ${subscribedBedAlerts[bed.id] ? 'fill-current' : ''}`} />
+                            <span>{subscribedBedAlerts[bed.id] ? 'On' : 'Off'}</span>
+                          </button>
+                        </div>
+
+                        {/* Sparkline mini occupancy trend */}
+                        <div className="py-1 my-1 border-y border-slate-200/60">
+                          <div className="flex items-center justify-between text-[10px] text-slate-400 mb-0.5">
+                            <span>7-Day Ward Trend</span>
+                            <span className="font-semibold text-slate-600">{bed.status === 'Occupied' ? '88%' : '42%'}</span>
+                          </div>
+                          <svg className="w-full h-6" viewBox="0 0 100 24" fill="none">
+                            <path
+                              d="M 0 18 Q 25 6 50 14 T 100 8"
+                              stroke={bed.status === 'Occupied' ? '#1E5EFF' : '#10B981'}
+                              strokeWidth="2.5"
+                              fill="none"
+                            />
+                          </svg>
+                        </div>
+
+                        <div className="pt-2 text-xs flex items-center justify-between">
+                          {bed.patient ? (
+                            <span className="font-semibold text-blue-900 flex items-center gap-1">
+                              <User className="w-3.5 h-3.5" /> {bed.patient}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic">Unassigned</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedBedForHistory(bed);
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-lg text-[11px] font-semibold border border-slate-200 shadow-xs flex items-center gap-1"
+                          >
+                            <Clock className="w-3 h-3" /> History
+                          </button>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -2463,6 +2907,7 @@ export default function App() {
         onSetupComplete={() => setNeedsSetup(false)}
         onAuthenticated={(user, message) => {
           setAuthUser(user);
+          setAuthPortal(getPortalForRole(user.role));
           setAuthModalOpen(false);
           const nextTab = getHomeTabForRole(user.role);
           setActiveTab(nextTab);
@@ -2491,14 +2936,43 @@ export default function App() {
       {/* Bed Status Update Modal */}
       {selectedBedForChange && (
         <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 border border-slate-100 space-y-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 border border-slate-100 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="font-bold text-lg text-slate-900">Update Bed Status</h3>
+                <h3 className="font-bold text-lg text-slate-900">Update Bed Status & Turnover Timeline</h3>
                 <p className="text-xs text-blue-600 font-semibold">{selectedBedForChange.code} — {selectedBedForChange.ward}</p>
               </div>
               <button onClick={() => setSelectedBedForChange(null)} className="p-1 text-slate-400"><X className="w-5 h-5" /></button>
             </div>
+
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2">
+              <h4 className="font-semibold text-xs uppercase text-slate-600 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-blue-600" /> Recent Bed Turnover Timeline (Last 5 Status Changes)
+              </h4>
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
+                  <span className="font-medium text-slate-800">Current Status: {selectedBedForChange.status}</span>
+                  <span className="font-mono text-slate-400 text-[11px]">Active</span>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
+                  <span className="text-slate-600">Turnover / Housekeeping Check Passed</span>
+                  <span className="font-mono text-slate-400 text-[11px]">2 hrs ago</span>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
+                  <span className="text-slate-600">Occupied (Inpatient Admission)</span>
+                  <span className="font-mono text-slate-400 text-[11px]">Yesterday</span>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
+                  <span className="text-slate-600">Available (Sanitization Complete)</span>
+                  <span className="font-mono text-slate-400 text-[11px]">3 days ago</span>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-slate-600">Initial Ward Initialization</span>
+                  <span className="font-mono text-slate-400 text-[11px]">Last week</span>
+                </div>
+              </div>
+            </div>
+
             <select
               value={bedEditStatus}
               onChange={(e) => setBedEditStatus(e.target.value)}
@@ -2509,9 +2983,68 @@ export default function App() {
               <option value="Cleaning">Cleaning</option>
               <option value="Maintenance">Maintenance</option>
             </select>
+
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+              <div>
+                <div className="text-xs font-semibold text-slate-800">Real-time Push Notifications</div>
+                <div className="text-[11px] text-slate-500">Alert via browser notifications when this bed becomes Available</div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(subscribedBedAlerts[selectedBedForChange.id])}
+                onClick={() => toggleBedPushSubscription(selectedBedForChange)}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                  subscribedBedAlerts[selectedBedForChange.id]
+                    ? 'bg-amber-500 text-white border-amber-600'
+                    : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+                }`}
+              >
+                <Bell className={`w-3.5 h-3.5 ${subscribedBedAlerts[selectedBedForChange.id] ? 'fill-current' : ''}`} />
+                <span>{subscribedBedAlerts[selectedBedForChange.id] ? 'Enabled' : 'Disabled'}</span>
+              </button>
+            </div>
+
             <div className="flex space-x-3">
               <button onClick={() => setSelectedBedForChange(null)} className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-semibold text-sm rounded-xl">Cancel</button>
               <button onClick={handleUpdateBedStatus} className="flex-1 py-2.5 bg-blue-600 text-white font-semibold text-sm rounded-xl">Save Status</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bed History Modal */}
+      {selectedBedForHistory && (
+        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-bold text-lg text-slate-900">Bed Turnover & Status History</h3>
+                <p className="text-xs text-blue-600 font-semibold">{selectedBedForHistory.code} — {selectedBedForHistory.ward} (Room {selectedBedForHistory.room})</p>
+              </div>
+              <button onClick={() => setSelectedBedForHistory(null)} className="p-1 text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+            </div>
+            
+            <div className="max-h-80 overflow-y-auto space-y-2 pr-1 divide-y divide-slate-100">
+              {[
+                { status: selectedBedForHistory.status, assignee: selectedBedForHistory.patient || 'Housekeeping / Ward Staff', timestamp: 'Just now (Current Status)' },
+                { status: 'Cleaning', assignee: 'Carlos Mendez (Housekeeping Supervisor)', timestamp: '2 hours ago' },
+                { status: 'Occupied', assignee: selectedBedForHistory.patient || 'Sarah Jenkins (PT-1001)', timestamp: 'Yesterday, 14:30' },
+                { status: 'Available', assignee: 'Dr. Elena Rostova / Ward Staff', timestamp: '3 days ago, 09:15' },
+                { status: 'Maintenance', assignee: 'Facilities Technician #4', timestamp: '5 days ago, 11:00' },
+              ].map((item, idx) => (
+                <div key={idx} className="pt-3 first:pt-0 flex items-start justify-between text-xs">
+                  <div>
+                    <span className="font-bold text-slate-900 px-2 py-0.5 rounded-md bg-slate-100 mr-2">{item.status}</span>
+                    <span className="text-slate-600 font-medium">Assigned to: {item.assignee}</span>
+                  </div>
+                  <span className="font-mono text-slate-400 text-[11px] shrink-0">{item.timestamp}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button onClick={() => setSelectedBedForHistory(null)} className="px-4 py-2 bg-slate-900 text-white font-semibold text-xs rounded-xl">Close History</button>
             </div>
           </div>
         </div>
@@ -2580,6 +3113,63 @@ export default function App() {
               <button onClick={() => setTransferModalOpen(false)} className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-semibold text-sm rounded-xl">Cancel</button>
               <button onClick={handleExecuteBedTransfer} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl">
                 Verify & Execute Transfer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      <QrScannerModal
+        isOpen={qrScannerOpen}
+        onClose={() => setQrScannerOpen(false)}
+        onScanResult={handleQrScanResult}
+        onNotify={notify}
+      />
+
+      {/* Scanned Record Details Modal */}
+      {scannedResultRecord && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full p-6 space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                  <QrCode className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900">Scanned Record Identified</h3>
+                  <p className="text-xs text-indigo-600 font-semibold">QR Code payload parsed successfully</p>
+                </div>
+              </div>
+              <button onClick={() => setScannedResultRecord(null)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded-xl bg-slate-100">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+              <div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Payload Data</div>
+              <pre className="bg-slate-900 text-emerald-400 p-3 rounded-xl text-xs font-mono overflow-x-auto max-h-48">
+                {typeof scannedResultRecord.parsed === 'object'
+                  ? JSON.stringify(scannedResultRecord.parsed, null, 2)
+                  : scannedResultRecord.raw}
+              </pre>
+            </div>
+
+            <div className="flex space-x-3 pt-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(scannedResultRecord.raw);
+                  notify('QR payload copied to clipboard!', 'success');
+                }}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl"
+              >
+                Copy Raw Payload
+              </button>
+              <button
+                onClick={() => setScannedResultRecord(null)}
+                className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-xl"
+              >
+                View in Panel
               </button>
             </div>
           </div>

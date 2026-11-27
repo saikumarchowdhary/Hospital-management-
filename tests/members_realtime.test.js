@@ -44,7 +44,7 @@ test('Registration & Admin All Members: patient emergency contact, pending staff
     assert.equal(patReg.status, 201);
     assert.equal(patReg.data.user.account_status, 'Active');
 
-    // Doctor & Nurse pending staff registration requests
+    // Doctor registration -> immediately Active & returns token
     const docReg = await ctx.createClient().post('/api/auth/register', {
       account_type: 'doctor', requested_role: 'doctor', full_name: 'Dr. Nina Shah',
       email: 'nina.shah@demo.com', mobile: '+1-555-9003', password: 'Password123',
@@ -53,7 +53,9 @@ test('Registration & Admin All Members: patient emergency contact, pending staff
       qualification: 'MD, FACC', experience_years: 11, availability_status: 'Available'
     });
     assert.equal(docReg.status, 201);
-    assert.equal(docReg.data.user.account_status, 'Pending Verification');
+    assert.equal(docReg.data.user.account_status, 'Active');
+    assert.equal(docReg.data.user.role, 'doctor');
+    assert.ok(docReg.data.accessToken);
 
     // Duplicate email rejected (409)
     const dupStaff = await ctx.createClient().post('/api/auth/register', {
@@ -62,30 +64,43 @@ test('Registration & Admin All Members: patient emergency contact, pending staff
     });
     assert.equal(dupStaff.status, 409);
 
-    // Pending doctor cannot login yet (403)
-    const pendingLogin = await ctx.createClient().login('nina.shah@demo.com', 'Password123');
+    // Non-doctor staff registration still requires admin approval
+    const nurseReg = await ctx.createClient().post('/api/auth/register', {
+      account_type: 'staff', requested_role: 'nurse', full_name: 'Nurse Maya',
+      email: 'maya.nurse@demo.com', mobile: '+1-555-9005', password: 'Password123'
+    });
+    assert.equal(nurseReg.status, 201);
+    assert.equal(nurseReg.data.user.account_status, 'Pending Approval');
+
+    // Pending nurse cannot login yet (403)
+    const pendingLogin = await ctx.createClient().login('maya.nurse@demo.com', 'Password123');
     assert.equal(pendingLogin.status, 403);
 
     // Admin All Members Management: list, filter, never exposes password_hash, inspect activity, approve, edit, suspend, reset
     const adm = ctx.createClient();
     await adm.login('admin@demo.com', 'Admin@123');
 
-    const pendingList = await adm.get('/api/admin/members?status=Pending+Verification');
+    const pendingList = await adm.get('/api/admin/members?status=Pending+Approval');
     assert.equal(pendingList.status, 200);
-    const pendingDoc = pendingList.data.members.find((m) => m.email === 'nina.shah@demo.com');
-    assert.ok(pendingDoc);
-    assert.equal(pendingDoc.password_hash, undefined);
+    const pendingNurse = pendingList.data.members.find((m) => m.email === 'maya.nurse@demo.com');
+    assert.ok(pendingNurse);
+    assert.equal(pendingNurse.password_hash, undefined);
 
-    const approveRes = await adm.post(`/api/admin/members/${pendingDoc.id}/review`, { decision: 'Approved', notes: 'Credentials verified' });
+    const approveRes = await adm.post(`/api/admin/members/${pendingNurse.id}/review`, { decision: 'Approved', notes: 'Credentials verified' });
     assert.equal(approveRes.status, 200);
 
-    // Now Dr. Nina Shah can log in and access her Doctor Dashboard!
+    // Dr. Nina Shah can log in immediately and access her Doctor Dashboard!
     const docClient = ctx.createClient();
     const docOk = await docClient.post('/api/auth/login', { identifier: 'nina.shah@demo.com', password: 'Password123', expected_role: 'doctor' });
     assert.equal(docOk.status, 200);
     const docDash = await docClient.get('/api/doctors/me/dashboard');
     assert.equal(docDash.status, 200);
     assert.equal(docDash.data.doctor.full_name, 'Dr. Nina Shah');
+
+    // Look up Dr. Nina Shah member ID for edit/suspend/reset tests
+    const ninaList = await adm.get('/api/admin/members?q=nina.shah@demo.com');
+    const pendingDoc = ninaList.data.members.find((m) => m.email === 'nina.shah@demo.com');
+    assert.ok(pendingDoc);
 
     // Admin edits member & inspects profile/work
     const editRes = await adm.patch(`/api/admin/members/${pendingDoc.id}`, { phone: '+1-555-9099', consultation_fee: 175 });

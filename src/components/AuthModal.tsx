@@ -36,7 +36,20 @@ export type LoginPortalType =
   | 'hr_publisher';
 
 export type HrPubSubRole = 'hr' | 'publisher' | 'approver';
-export type AccountTypeOption = 'patient' | 'candidate' | 'doctor' | 'staff';
+export type AccountTypeOption = 'patient' | 'candidate' | 'doctor' | 'staff' | 'admin' | 'department_admin';
+
+function extractAccessToken(res: any): string | null {
+  if (!res || typeof res !== 'object') return null;
+  return (
+    res.accessToken ||
+    res.token ||
+    res.access_token ||
+    res.data?.accessToken ||
+    res.data?.token ||
+    res.session?.access_token ||
+    null
+  );
+}
 
 interface AuthModalProps {
   open: boolean;
@@ -108,6 +121,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const [accountType, setAccountType] = useState<AccountTypeOption>('patient');
   const [showRegPass, setShowRegPass] = useState(false);
+  const [showPasscode, setShowPasscode] = useState(false);
   const [reg, setReg] = useState({
     full_name: '',
     email: '',
@@ -145,9 +159,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     setPortal(initialPortal);
-    if (initialPortal === 'admin' || initialPortal === 'department_admin') {
-      setTab('login');
-    }
     if (initialPortal === 'hr') setHrPubRole('hr');
     if (initialPortal === 'publisher') setHrPubRole('publisher');
     if (initialPortal === 'approver') setHrPubRole('approver');
@@ -155,15 +166,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     if (!open) return;
-    if (initialPortal === 'admin' || initialPortal === 'department_admin' || portal === 'admin' || portal === 'department_admin') {
-      setTab('login');
-    } else {
-      setTab(initialTab);
-    }
+    setTab(initialTab);
     setErrorMsg(null);
     setSuccessMsg(null);
-    setAccountType(initialAccountType || 'patient');
-  }, [open, initialTab, initialAccountType, initialPortal, portal]);
+    const defaultType: AccountTypeOption =
+      initialAccountType ||
+      (initialPortal === 'admin'
+        ? 'admin'
+        : initialPortal === 'department_admin'
+        ? 'department_admin'
+        : 'patient');
+    setAccountType(defaultType);
+  }, [open, initialTab, initialAccountType, initialPortal]);
 
   useEffect(() => {
     if (!open || needsSetup) return;
@@ -263,7 +277,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setErrorMsg('You do not have admin access.');
         return;
       }
-      setAccessToken(res.token || res.accessToken);
+      const token = extractAccessToken(res);
+      setAccessToken(token);
       onAuthenticated(res.user, `Signed in as ${res.user.full_name} (${res.user.role_name}).`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Sign in failed.');
@@ -322,91 +337,154 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
+    if (accountType === 'doctor' && licenceFile) {
+      const allowedExt = /\.(pdf|png|jpe?g)$/i.test(licenceFile.name);
+      const allowedMime = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'].includes(licenceFile.type);
+      if (!allowedExt && !allowedMime) {
+        setErrorMsg('Invalid license file. Please upload a PDF, PNG, or JPG file.');
+        return;
+      }
+      if (licenceFile.size > 5 * 1024 * 1024) {
+        setErrorMsg('License file must be 5 MB or smaller.');
+        return;
+      }
+    }
+
+    if ((accountType === 'admin' || accountType === 'department_admin') && !reg.verification_code.trim()) {
+      setErrorMsg(
+        accountType === 'admin'
+          ? 'Admin Role Passcode is required.'
+          : 'Department Admin Role Passcode is required.'
+      );
+      return;
+    }
+    if (accountType === 'department_admin' && !reg.department_id) {
+      setErrorMsg('Please select a department for Department Admin registration.');
+      return;
+    }
+
     setBusy(true);
     try {
-      const hasFile = Boolean((accountType === 'doctor' && (photoFile || licenceFile)) || (accountType === 'staff' && staffDocFile));
-      let body: any;
-      if (hasFile) {
-        const fd = new FormData();
-        fd.append('account_type', accountType);
-        fd.append('full_name', reg.full_name.trim());
-        fd.append('email', reg.email.trim());
-        fd.append('mobile', reg.mobile.trim());
-        fd.append('password', reg.password);
-        if (otpVerified) fd.append('otp_verified', 'true');
-        if (accountType === 'doctor') {
-          fd.append('requested_role', 'doctor');
-          fd.append('medical_registration_number', reg.medical_registration_number.trim());
-          fd.append('medical_council', reg.medical_council.trim());
-          fd.append('branch_id', reg.branch_id);
-          fd.append('department_id', reg.department_id);
-          fd.append('specialty_id', reg.specialty_id);
-          fd.append('qualification', reg.qualification.trim());
-          fd.append('experience_years', reg.experience_years);
-          fd.append('consultation_fee', reg.consultation_fee);
-          if (photoFile) fd.append('photo', photoFile);
-          if (licenceFile) fd.append('licence', licenceFile);
-        } else if (accountType === 'staff') {
-          fd.append('requested_role', reg.requested_role);
-          fd.append('branch_id', reg.branch_id);
-          fd.append('department_id', reg.department_id);
-          fd.append('employee_id', reg.employee_id.trim());
-          fd.append('qualification', reg.qualification.trim());
-          if (staffDocFile) fd.append('document_file', staffDocFile);
-        }
-        body = fd;
+      let res: any;
+      if (accountType === 'admin' || accountType === 'department_admin') {
+        res = await apiRequest('/api/auth/register-admin-hr', {
+          method: 'POST',
+          body: {
+            account_type: accountType,
+            admin_scope: accountType === 'admin' ? 'super_admin' : 'department_admin',
+            full_name: reg.full_name.trim(),
+            email: reg.email.trim(),
+            mobile: reg.mobile.trim(),
+            department_id: reg.department_id ? Number(reg.department_id) : undefined,
+            employee_id: reg.employee_id.trim() || undefined,
+            designation: reg.designation.trim() || undefined,
+            verification_code: reg.verification_code.trim(),
+            password: reg.password,
+            confirm_password: reg.confirm,
+          },
+        });
       } else {
-        body = {
-          account_type: accountType,
-          full_name: reg.full_name.trim(),
-          email: reg.email.trim(),
-          mobile: reg.mobile.trim(),
-          password: reg.password,
-          otp_verified: otpVerified,
-          ...(accountType === 'patient'
-            ? {
-                dob: reg.dob,
-                gender: reg.gender,
-                address: reg.address || 'Not provided',
-                emergency_contact_name: reg.emergency_contact_name,
-                emergency_contact_phone: reg.emergency_contact_phone,
-                consent: reg.consent,
-                consent_text: CONSENT_TEXT,
-                consent_version: CONSENT_VERSION,
-              }
-            : {}),
-          ...(accountType === 'doctor'
-            ? {
-                requested_role: 'doctor',
-                medical_registration_number: reg.medical_registration_number.trim(),
-                medical_council: reg.medical_council.trim(),
-                branch_id: reg.branch_id ? Number(reg.branch_id) : 1,
-                department_id: reg.department_id ? Number(reg.department_id) : undefined,
-                specialty_id: reg.specialty_id ? Number(reg.specialty_id) : undefined,
-                qualification: reg.qualification.trim(),
-                experience_years: Number(reg.experience_years || 5),
-                consultation_fee: Number(reg.consultation_fee || 100),
-              }
-            : {}),
-          ...(accountType === 'staff'
-            ? {
-                requested_role: reg.requested_role,
-                branch_id: reg.branch_id ? Number(reg.branch_id) : 1,
-                department_id: reg.department_id ? Number(reg.department_id) : undefined,
-                employee_id: reg.employee_id.trim(),
-                qualification: reg.qualification.trim(),
-              }
-            : {}),
-        };
-      }
+        const hasFile = Boolean((accountType === 'doctor' && (photoFile || licenceFile)) || (accountType === 'staff' && staffDocFile));
+        let body: any;
+        if (hasFile) {
+          const fd = new FormData();
+          fd.append('account_type', accountType);
+          fd.append('full_name', reg.full_name.trim());
+          fd.append('email', reg.email.trim());
+          fd.append('mobile', reg.mobile.trim());
+          fd.append('password', reg.password);
+          if (otpVerified) fd.append('otp_verified', 'true');
+          if (accountType === 'doctor') {
+            fd.append('requested_role', 'doctor');
+            fd.append('medical_registration_number', reg.medical_registration_number.trim());
+            fd.append('medical_council', reg.medical_council.trim());
+            fd.append('branch_id', reg.branch_id);
+            fd.append('department_id', reg.department_id);
+            fd.append('specialty_id', reg.specialty_id);
+            fd.append('qualification', reg.qualification.trim());
+            fd.append('experience_years', reg.experience_years);
+            fd.append('consultation_fee', reg.consultation_fee);
+            if (photoFile) fd.append('photo', photoFile);
+            if (licenceFile) fd.append('licence', licenceFile);
+          } else if (accountType === 'staff') {
+            fd.append('requested_role', reg.requested_role);
+            fd.append('branch_id', reg.branch_id);
+            fd.append('department_id', reg.department_id);
+            fd.append('employee_id', reg.employee_id.trim());
+            fd.append('qualification', reg.qualification.trim());
+            if (staffDocFile) fd.append('document_file', staffDocFile);
+          }
+          body = fd;
+        } else {
+          body = {
+            account_type: accountType,
+            full_name: reg.full_name.trim(),
+            email: reg.email.trim(),
+            mobile: reg.mobile.trim(),
+            password: reg.password,
+            otp_verified: otpVerified,
+            ...(accountType === 'patient'
+              ? {
+                  dob: reg.dob,
+                  gender: reg.gender,
+                  address: reg.address || 'Not provided',
+                  emergency_contact_name: reg.emergency_contact_name,
+                  emergency_contact_phone: reg.emergency_contact_phone,
+                  consent: reg.consent,
+                  consent_text: CONSENT_TEXT,
+                  consent_version: CONSENT_VERSION,
+                }
+              : {}),
+            ...(accountType === 'doctor'
+              ? {
+                  requested_role: 'doctor',
+                  medical_registration_number: reg.medical_registration_number.trim(),
+                  medical_council: reg.medical_council.trim(),
+                  branch_id: reg.branch_id ? Number(reg.branch_id) : 1,
+                  department_id: reg.department_id ? Number(reg.department_id) : undefined,
+                  specialty_id: reg.specialty_id ? Number(reg.specialty_id) : undefined,
+                  qualification: reg.qualification.trim(),
+                  experience_years: Number(reg.experience_years || 5),
+                  consultation_fee: Number(reg.consultation_fee || 100),
+                }
+              : {}),
+            ...(accountType === 'staff'
+              ? {
+                  requested_role: reg.requested_role,
+                  branch_id: reg.branch_id ? Number(reg.branch_id) : 1,
+                  department_id: reg.department_id ? Number(reg.department_id) : undefined,
+                  employee_id: reg.employee_id.trim(),
+                  qualification: reg.qualification.trim(),
+                }
+              : {}),
+          };
+        }
 
-      const res = await apiRequest('/api/auth/register', { method: 'POST', body });
-      if (res.pendingApproval || res.pendingVerification) {
+        res = await apiRequest('/api/auth/register', { method: 'POST', body });
+      }
+      const token = extractAccessToken(res);
+      if (res.pendingApproval && !token) {
         setSuccessMsg(res.message);
         return;
       }
-      setAccessToken(res.token || res.accessToken);
-      onAuthenticated(res.user, `Welcome ${res.user.full_name}! Account ${res.user.user_code} created.`);
+      if (token) {
+        setAccessToken(token);
+        const successText = res.message || 'Account created successfully';
+        setSuccessMsg(successText);
+        onAuthenticated(res.user, successText);
+        return;
+      }
+      // Fallback auto-login if register succeeded without returning an inline token
+      const loginRes = await apiRequest('/api/auth/login', {
+        method: 'POST',
+        body: { identifier: reg.email.trim(), password: reg.password, remember: true },
+      });
+      const loginToken = extractAccessToken(loginRes);
+      if (loginToken) {
+        setAccessToken(loginToken);
+      }
+      const fallbackMsg = res.message || 'Account created successfully';
+      onAuthenticated(loginRes.user || res.user, fallbackMsg);
     } catch (err: any) {
       setErrorMsg(err.message || 'Registration failed.');
     } finally {
@@ -484,20 +562,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       ? 'Candidate Careers Login'
       : 'Patient Portal Login';
 
+  const identifierLabel =
+    portal === 'admin'
+      ? 'Admin Name (or Email / Phone)'
+      : portal === 'department_admin'
+      ? 'Department Admin Name (or Email / Phone)'
+      : 'Email or Phone';
+
   const identifierPlaceholder =
     portal === 'admin'
-      ? 'admin@hospital.org'
+      ? 'Enter your Admin Name (or email / phone)'
       : portal === 'department_admin'
-      ? 'Department Admin Email or Employee ID'
+      ? 'Enter your Department Admin Name (or email / phone)'
       : portal === 'hr' || portal === 'publisher' || portal === 'approver'
-      ? `${portal.toUpperCase()} Email or Employee ID`
+      ? `Work email, phone number, or ${portal.toUpperCase()} ID`
       : portal === 'hr_publisher'
-      ? `${hrPubRole.toUpperCase()} ID or Work Email`
+      ? `Work email, phone number, or ${hrPubRole.toUpperCase()} ID`
       : portal === 'staff'
-      ? 'Employee / Staff ID or Work Email'
+      ? 'Email, phone (+91...), or Staff ID'
       : patientSubRole === 'candidate'
-      ? 'Candidate ID or Email'
-      : 'Patient ID (PT-...) or Email';
+      ? 'Email, phone number, or Candidate ID'
+      : 'Email, phone (+91...), or Patient ID';
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto">
@@ -526,7 +611,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </div>
 
-        {!needsSetup && portal !== 'admin' && portal !== 'department_admin' && (
+        {!needsSetup && (
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
             <button
               type="button"
@@ -547,6 +632,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               data-testid="tab-create-account"
               onClick={() => {
                 setTab('register');
+                if (portal === 'admin') {
+                  setAccountType('admin');
+                } else if (portal === 'department_admin') {
+                  setAccountType('department_admin');
+                }
                 setErrorMsg(null);
                 setSuccessMsg(null);
               }}
@@ -644,9 +734,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       data-testid={`portal-${card.id}`}
                       onClick={() => {
                         setPortal(card.id);
-                        if (card.id === 'admin' || card.id === 'department_admin') {
-                          setTab('login');
-                        }
                         setErrorMsg(null);
                       }}
                       className={`p-2.5 rounded-xl border text-left transition-all ${
@@ -738,15 +825,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <form onSubmit={submitLogin} className="space-y-3">
               <div>
                 <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  {portal === 'admin'
-                    ? 'Admin Email Address'
-                    : portal === 'department_admin'
-                    ? 'Email Address or Employee ID'
-                    : 'Email, Employee ID or User ID'}
+                  {identifierLabel}
                 </label>
                 <input
                   required
-                  type={portal === 'admin' ? 'email' : 'text'}
+                  type="text"
                   value={loginId}
                   onChange={(e) => setLoginId(e.target.value)}
                   placeholder={identifierPlaceholder}
@@ -754,14 +837,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Password</label>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  {portal === 'admin'
+                    ? 'Admin Password'
+                    : portal === 'department_admin'
+                    ? 'Department Admin Password'
+                    : 'Password'}
+                </label>
                 <div className="relative">
                   <input
                     required
                     type={showLoginPass ? 'text' : 'password'}
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="Enter your password"
+                    placeholder={
+                      portal === 'admin'
+                        ? 'Enter Admin Password'
+                        : portal === 'department_admin'
+                        ? 'Enter Department Admin Password'
+                        : 'Enter your password'
+                    }
                     className="w-full pl-3.5 pr-10 py-2.5 bg-slate-100 rounded-xl text-sm"
                   />
                   <button
@@ -830,7 +925,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                             method: 'POST',
                             body: { identifier: acc.email, password: acc.password, remember: true },
                           });
-                          setAccessToken(res.token || res.accessToken);
+                          setAccessToken(extractAccessToken(res));
                           onAuthenticated(res.user, `Signed in as ${res.user.full_name}.`);
                         } catch (err: any) {
                           setErrorMsg(err.message || 'Demo login failed.');
@@ -903,12 +998,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <form onSubmit={submitRegister} className="space-y-3">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">I am a...</label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {[
                   { id: 'patient', label: 'Patient' },
                   { id: 'doctor', label: 'Doctor' },
                   { id: 'candidate', label: 'Candidate' },
                   { id: 'staff', label: 'Hospital Staff' },
+                  { id: 'admin', label: 'Admin' },
+                  { id: 'department_admin', label: 'Department Admin' },
                 ].map((opt) => (
                   <button
                     key={opt.id}
@@ -928,9 +1025,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1.5">
-                Administrator accounts cannot be created via public sign-up. Contact an existing administrator.
-              </p>
+              {(accountType === 'admin' || accountType === 'department_admin') && (
+                <p className="text-[11px] text-slate-500 mt-1.5">
+                  {accountType === 'admin'
+                    ? 'Admin account creation requires the Admin Role Passcode.'
+                    : 'Department Admin account creation requires a department selection and the Department Admin Role Passcode.'}
+                </p>
+              )}
             </div>
 
             <>
@@ -939,7 +1040,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     required
                     value={reg.full_name}
                     onChange={(e) => setReg({ ...reg, full_name: e.target.value })}
-                    placeholder="Full Legal Name"
+                    placeholder={
+                      accountType === 'admin'
+                        ? 'Admin Full Name *'
+                        : accountType === 'department_admin'
+                        ? 'Department Admin Full Name *'
+                        : 'Full Legal Name'
+                    }
                     className="sm:col-span-2 w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
                   />
                   <input
@@ -947,7 +1054,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     type="email"
                     value={reg.email}
                     onChange={(e) => setReg({ ...reg, email: e.target.value })}
-                    placeholder={accountType === 'doctor' || accountType === 'staff' ? 'Work Email' : 'Email Address'}
+                    placeholder={
+                      accountType === 'doctor' || accountType === 'staff' || accountType === 'admin' || accountType === 'department_admin'
+                        ? 'Work Email'
+                        : 'Email Address'
+                    }
                     className="w-full px-3.5 py-2.5 bg-slate-100 rounded-xl text-sm"
                   />
                   <input
@@ -1114,6 +1225,68 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                 )}
 
+                {(accountType === 'admin' || accountType === 'department_admin') && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        {accountType === 'department_admin' ? 'Assigned Department *' : 'Department'}
+                      </label>
+                      <select
+                        required={accountType === 'department_admin'}
+                        value={reg.department_id}
+                        onChange={(e) => setReg({ ...reg, department_id: e.target.value })}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                      >
+                        {regMeta.departments.map((d) => (
+                          <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <input
+                      value={reg.employee_id}
+                      onChange={(e) => setReg({ ...reg, employee_id: e.target.value })}
+                      placeholder="Employee ID (optional)"
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <input
+                      value={reg.designation}
+                      onChange={(e) => setReg({ ...reg, designation: e.target.value })}
+                      placeholder={
+                        accountType === 'admin'
+                          ? 'Designation (e.g. System Administrator)'
+                          : 'Designation (e.g. Department Administrator)'
+                      }
+                      className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        {accountType === 'admin' ? 'Admin Role Passcode *' : 'Department Admin Role Passcode *'}
+                      </label>
+                      <div className="relative">
+                        <input
+                          required
+                          type={showPasscode ? 'text' : 'password'}
+                          value={reg.verification_code}
+                          onChange={(e) => setReg({ ...reg, verification_code: e.target.value })}
+                          placeholder={
+                            accountType === 'admin'
+                              ? 'Enter Admin Role Passcode'
+                              : 'Enter Department Admin Role Passcode'
+                          }
+                          className="w-full pl-3 pr-9 py-2 bg-white border border-slate-200 rounded-lg text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPasscode(!showPasscode)}
+                          aria-label={showPasscode ? 'Hide passcode' : 'Show passcode'}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        >
+                          {showPasscode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
               </>
 
@@ -1168,7 +1341,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 : accountType === 'candidate'
                 ? 'Create Candidate Account'
                 : accountType === 'doctor'
-                ? 'Submit Doctor Verification'
+                ? 'Create Doctor Account'
+                : accountType === 'admin'
+                ? 'Create Admin Account'
+                : accountType === 'department_admin'
+                ? 'Create Department Admin Account'
                 : 'Submit Staff Request'}
             </button>
           </form>

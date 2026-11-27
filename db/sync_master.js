@@ -200,10 +200,11 @@ export function syncMasterSeedData(db, rolesList, permsList, rolePermMap, demoUs
     for (const [dCode, email, name, spec, dept, br, qual, exp, fee] of EXTRA_SPECIALIST_DOCTORS) {
       let userRow = db.get('SELECT id FROM users WHERE email = ?', [email]);
       if (!userRow) {
+        const specPhone = `+1-555-${dCode.replace('DR-', '')}`;
         const uInfo = db.run(
           `INSERT INTO users (user_code, email, password_hash, full_name, phone, role_id, branch_id, department_id)
-           VALUES (?, ?, ?, ?, '+1-555-0250', ?, ?, ?)`,
-          [dCode, email, docPass, name, roleMap['doctor'], branchMap[br] || mainBranch.id, deptMap[dept] || deptMap['General Medicine']]
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [dCode, email, docPass, name, specPhone, roleMap['doctor'], branchMap[br] || mainBranch.id, deptMap[dept] || deptMap['General Medicine']]
         );
         userRow = { id: uInfo.lastInsertRowid };
         db.run(
